@@ -1,0 +1,5 @@
+[global]
+disableWatchdogWarning = true
+
+[browser]
+gatherUsageStats = false

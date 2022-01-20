@@ -1,0 +1,9 @@
+faiss-cpu
+lmdb
+onnxruntime
+pytorch-lightning==1.4.9
+regex
+streamlit
+torch==1.10.1
+tqdm
+transformers==4.15.0
