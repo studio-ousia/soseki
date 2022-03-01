@@ -7,10 +7,14 @@ BPR was originally developed to achieve high computational efficiency of the QA 
 
 ## Installation
 
-You can install the required libraries using pip:
-
 ```sh
-$ pip install -r requirements.txt
+# Before installation, upgrade pip and setuptools
+$ pip install -U pip setuptools
+
+# Install the soseki package
+$ pip install .
+# Or if you want to install it in development mode
+$ pip install --editable .
 ```
 
 **Note:** If you are using a GPU Environment different from CUDA 10.2, you may need to reinstall PyTorch according to [the official documentation](https://pytorch.org/get-started/locally/).
