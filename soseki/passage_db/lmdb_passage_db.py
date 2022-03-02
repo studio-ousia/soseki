@@ -48,7 +48,7 @@ class LMDBPassageDB:
         db = lmdb.open(db_file, map_size=db_map_size, subdir=False)
         with db.begin(write=True) as txn:
             with gzip.open(passage_file, "rt") if passage_file.endswith(".gz") else open(passage_file) as f:
-                tsv_reader = csv.reader(f, doublequote=False, delimiter="\t")
+                tsv_reader = csv.reader(f, delimiter="\t")
                 buffer = []
                 for i, row in tqdm(enumerate(tsv_reader)):
                     if i == 0 and skip_header:

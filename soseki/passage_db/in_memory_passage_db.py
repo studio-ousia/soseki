@@ -11,7 +11,7 @@ class InMemoryPassageDB:
     def __init__(self, passage_file: str, skip_header: bool = True):
         self.data = dict()
         with gzip.open(passage_file, "rt") if passage_file.endswith(".gz") else open(passage_file) as f:
-            tsv_reader = csv.reader(f, doublequote=False, delimiter="\t")
+            tsv_reader = csv.reader(f, delimiter="\t")
             for i, row in tqdm(enumerate(tsv_reader)):
                 if i == 0 and skip_header:
                     continue
