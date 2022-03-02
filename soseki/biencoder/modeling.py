@@ -7,13 +7,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.optim import Optimizer
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
 from transformers import AutoModel
-from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup
 
 from .tokenization import EncoderTokenization
 from ..passage_db.lmdb_passage_db import LMDBPassageDB
@@ -29,6 +29,10 @@ class EncoderModel(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = AutoModel.from_pretrained(base_model_name, add_pooling_layer=False, return_dict=False)
+        # For LUKE / mLUKE models which take large amounts of memory for entity embeddings
+        if hasattr(self.encoder, "entity_embeddings"):
+            del self.encoder.entity_embeddings
+
         self._pooling_index = pooling_index
         self._projection_dim = projection_dim
 
@@ -422,7 +426,7 @@ class BiencoderLightningModule(LightningModule):
             dense_scores = torch.matmul(encoded_question, binary_encoded_passage.transpose(0, 1))
             dense_loss = F.cross_entropy(dense_scores, label)
 
-            output["binary_loss"] = dense_loss.detach()
+            output["dense_loss"] = dense_loss.detach()
 
             binary_encoded_question = self._convert_to_binary_code(encoded_question)
             binary_scores = torch.matmul(binary_encoded_question, binary_encoded_passage.transpose(0, 1))

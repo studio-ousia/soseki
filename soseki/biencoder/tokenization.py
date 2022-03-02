@@ -1,6 +1,6 @@
 from typing import List, Union
 
-from transformers import AutoTokenizer, T5Tokenizer
+from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 
 
@@ -14,7 +14,7 @@ class EncoderTokenization:
         else:
             questions = [self._preprocess_question(question) for question in questions]
 
-        return self.tokenizer(questions, **kwargs)
+        return self.tokenizer(questions, return_token_type_ids=True, **kwargs)
 
     def tokenize_passages(self, titles: Union[str, List[str]], texts: Union[str, List[str]], **kwargs) -> BatchEncoding:
         if isinstance(titles, str):
@@ -27,7 +27,7 @@ class EncoderTokenization:
         else:
             texts = [self._preprocess_passage_text(text) for text in texts]
 
-        return self.tokenizer(titles, texts, **kwargs)
+        return self.tokenizer(titles, texts, return_token_type_ids=True, **kwargs)
 
     def _preprocess_question(self, text: str) -> str:
         text = text.rstrip("?")

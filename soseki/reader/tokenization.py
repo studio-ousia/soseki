@@ -3,7 +3,7 @@ import re
 import unicodedata
 from typing import List, Tuple
 
-from transformers import AutoTokenizer, T5Tokenizer
+from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 
 from ..utils.data_utils import AnswerSpan, find_sublist_slices
@@ -33,12 +33,22 @@ class ReaderTokenization:
             text_a = question + self.tokenizer.sep_token + passage_title
             text_b = passags_text
 
-        return self.tokenizer(text_a, text_b, **kwargs)
+        return self.tokenizer(text_a, text_b, return_token_type_ids=True, **kwargs)
 
     def tokenize_input_with_answers(
         self, question: str, passage_title: str, passags_text: str, answers: List[str], **kwargs
     ) -> Tuple[BatchEncoding, List[Tuple[int, int]]]:
         tokenized_input = self.tokenize_input(question, passage_title, passags_text, **kwargs)
+        input_token_ids = tokenized_input["input_ids"]
+
+        # The special tokens for separating two input texts are not consistent across models at Huggiing Face.
+        # Here we introduce some heuristics which can cover most cases.
+        if self.tokenizer.eos_token_id is not None:
+            sep_token_id = self.tokenizer.eos_token_id
+        elif self.tokenizer.sep_token_id is not None:
+            sep_token_id = self.tokenizer.eos_token_id
+        else:
+            sep_token_id = -1
 
         answer_spans = []
         for answer in answers:
@@ -46,8 +56,8 @@ class ReaderTokenization:
             answer_token_ids = self.tokenizer(answer, add_special_tokens=False)["input_ids"]
             answer_slices = find_sublist_slices(
                 answer_token_ids,
-                tokenized_input["input_ids"],
-                start=tokenized_input["token_type_ids"].index(1)
+                input_token_ids,
+                start=input_token_ids.index(sep_token_id) if sep_token_id in input_token_ids else 0
             )
             for start, stop in answer_slices:
                 answer_spans.append((start, stop - 1))

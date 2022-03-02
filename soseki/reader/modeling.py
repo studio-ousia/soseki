@@ -7,13 +7,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.optim import Optimizer
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
 from transformers import AutoModel
-from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup
 
 from .tokenization import ReaderTokenization
 from ..utils.data_utils import ReaderDatasetExample, RetrievedPassage, AnswerCandidate, readitem_json
@@ -27,6 +27,9 @@ class ReaderModel(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = AutoModel.from_pretrained(base_model_name, add_pooling_layer=False, return_dict=False)
+        # For LUKE / mLUKE models which take large amounts of memory for entity embeddings
+        if hasattr(self.encoder, "entity_embeddings"):
+            del self.encoder.entity_embeddings
 
         self.qa_outputs = nn.Linear(self.encoder.config.hidden_size, 2)
         self.qa_classifier = nn.Linear(self.encoder.config.hidden_size, 1)
@@ -812,7 +815,7 @@ class ReaderLightningModule(LightningModule):
         num_training_steps = int(
             len(self._train_dataset)
             // (self.hparams.train_batch_size * max(self.trainer.num_gpus, 1))
-            // self.hparams.accumulate_grad_batches
+            // self.trainer.accumulate_grad_batches
             * float(self.hparams.max_epochs)
         )
         num_warmup_steps = int(self.hparams.warmup_proportion * num_training_steps)
