@@ -1,6 +1,6 @@
 from argparse import ArgumentParser, Namespace
 
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.trainer import Trainer, seed_everything
 
 from soseki.reader.modeling import ReaderLightningModule
@@ -13,7 +13,10 @@ def main(args: Namespace) -> None:
     checkpoint_callback = ModelCheckpoint(
         filename="best", monitor="val_answer_accuracy", save_last=True, save_top_k=1, mode="max"
     )
-    trainer = Trainer.from_argparse_args(args, default_root_dir=args.output_dir, callbacks=[checkpoint_callback])
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+    trainer = Trainer.from_argparse_args(
+        args, default_root_dir=args.output_dir, callbacks=[checkpoint_callback, lr_monitor]
+    )
     trainer.fit(model)
 
 
