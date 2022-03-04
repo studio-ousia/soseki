@@ -62,11 +62,15 @@ class BiencoderLightningModule(LightningModule):
             pooling_index=self.hparams.encoder_pooling_index,
             projection_dim=self.hparams.encoder_projection_dim,
         )
-        self.passage_encoder = EncoderModel(
-            self.hparams.base_pretrained_model,
-            pooling_index=self.hparams.encoder_pooling_index,
-            projection_dim=self.hparams.encoder_projection_dim,
-        )
+
+        if self.hparams.share_encoders:
+            self.passage_encoder = self.question_encoder
+        else:
+            self.passage_encoder = EncoderModel(
+                self.hparams.base_pretrained_model,
+                pooling_index=self.hparams.encoder_pooling_index,
+                projection_dim=self.hparams.encoder_projection_dim,
+            )
 
         self.tokenization = EncoderTokenization(self.hparams.base_pretrained_model)
 
@@ -103,6 +107,7 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--base_pretrained_model", type=str, default="bert-base-uncased")
         parser.add_argument("--encoder_pooling_index", type=int, default=0)
         parser.add_argument("--encoder_projection_dim", type=int)
+        parser.add_argument("--share_encoders", action="store_true")
 
         parser.add_argument("--binary", action="store_true")
         parser.add_argument("--use_ste", action="store_true")
