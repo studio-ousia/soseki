@@ -1,23 +1,24 @@
 import math
 import random
 from argparse import ArgumentParser, Namespace
+from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.optim import AdamW, Optimizer
-from torch.utils.data import DataLoader, Dataset
+from torch.optim import Optimizer
+from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
 from transformers import AutoModel
-from transformers.optimization import get_linear_schedule_with_warmup
+from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
 from .tokenization import EncoderTokenization
 from ..passage_db.lmdb_passage_db import LMDBPassageDB
-from ..utils.data_utils import Passage, RetrieverDatasetExample, readitem_json
+from ..utils.data_utils import Passage, RetrieverDatasetExample, WeightedConcatDatasetSampler, readitem_json
 
 
 class EncoderModel(nn.Module):
@@ -77,6 +78,11 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--dev_file", type=str, required=True)
         parser.add_argument("--passage_db_file", type=str)
 
+        parser.add_argument("--train_dataset_names", nargs="*", type=str)
+        parser.add_argument("--train_dataset_weights", nargs="*", type=float)
+        parser.add_argument("--dev_dataset_names", nargs="*", type=str)
+        parser.add_argument("--dev_dataset_weights", nargs="*", type=float)
+
         parser.add_argument("--train_max_load_positive_passages", type=int)
         parser.add_argument("--train_max_load_hard_negative_passages", type=int)
         parser.add_argument("--train_max_load_normal_negative_passages", type=int)
@@ -120,6 +126,7 @@ class BiencoderLightningModule(LightningModule):
             rank_zero_info("Loading training data")
             self._train_dataset = self._load_dataset(
                 self.hparams.train_file,
+                dataset_names=self.hparams.train_dataset_names,
                 max_load_positive_passages=self.hparams.train_max_load_positive_passages,
                 max_load_hard_negative_passages=self.hparams.train_max_load_hard_negative_passages,
                 max_load_normal_negative_passages=self.hparams.train_max_load_normal_negative_passages,
@@ -130,6 +137,7 @@ class BiencoderLightningModule(LightningModule):
             rank_zero_info("Loading development data")
             self._dev_dataset = self._load_dataset(
                 self.hparams.dev_file,
+                dataset_names=self.hparams.dev_dataset_names,
                 max_load_positive_passages=self.hparams.dev_max_load_positive_passages,
                 max_load_hard_negative_passages=self.hparams.dev_max_load_hard_negative_passages,
                 max_load_normal_negative_passages=self.hparams.dev_max_load_normal_negative_passages,
@@ -139,17 +147,18 @@ class BiencoderLightningModule(LightningModule):
     def _load_dataset(
         self,
         dataset_file: str,
+        dataset_names: Optional[List[str]] = None,
         max_load_positive_passages: Optional[int] = None,
         max_load_hard_negative_passages: Optional[int] = None,
         max_load_normal_negative_passages: Optional[int] = None,
-    ) -> List[RetrieverDatasetExample]:
+    ) -> ConcatDataset:
         dataset_iterator = readitem_json(dataset_file)
         if self.global_rank == 0:
             dataset_iterator = tqdm(dataset_iterator)
 
-        dataset = []
+        datasets: Dict[str, List[RetrieverDatasetExample]] = defaultdict(list)
+        index = 0
         for item in dataset_iterator:
-            index = len(dataset)
             example = self._create_dataset_example(
                 index,
                 item,
@@ -162,9 +171,14 @@ class BiencoderLightningModule(LightningModule):
             if len(example.hard_negative_passages) + len(example.normal_negative_passages) == 0:
                 continue
 
-            dataset.append(example)
+            datasets[example.dataset].append(example)
+            index += 1
 
-        return dataset
+        if not dataset_names:
+            dataset_names = list(datasets.keys())
+
+        concat_dataset = ConcatDataset(datasets[dataset_name] for dataset_name in dataset_names)
+        return concat_dataset
 
     def _create_dataset_example(
         self,
@@ -174,6 +188,7 @@ class BiencoderLightningModule(LightningModule):
         max_load_hard_negative_passages: Optional[int] = None,
         max_load_normal_negative_passages: Optional[int] = None,
     ) -> RetrieverDatasetExample:
+        dataset_name = item.pop("dataset", "")
         question = item.pop("question")
         answers = item.pop("answers")
 
@@ -202,6 +217,7 @@ class BiencoderLightningModule(LightningModule):
 
         example = RetrieverDatasetExample(
             index=index,
+            dataset=dataset_name,
             question=question,
             answers=answers,
             positive_passages=positive_passages,
@@ -216,6 +232,7 @@ class BiencoderLightningModule(LightningModule):
             dataset=self._train_dataset,
             training=True,
             batch_size=self.hparams.train_batch_size,
+            dataset_weights=self.hparams.train_dataset_weights,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -223,13 +240,26 @@ class BiencoderLightningModule(LightningModule):
             dataset=self._dev_dataset,
             training=False,
             batch_size=self.hparams.eval_batch_size,
+            dataset_weights=self.hparams.dev_dataset_weights,
         )
 
-    def _get_dataloader(self, dataset: Dataset, training: bool, batch_size: int) -> DataLoader:
+    def _get_dataloader(
+        self,
+        dataset: ConcatDataset,
+        training: bool,
+        batch_size: int,
+        dataset_weights: Optional[float] = None,
+    ) -> DataLoader:
+        sampler = WeightedConcatDatasetSampler(
+            dataset,
+            weights=dataset_weights,
+            chunk_size=batch_size * max(self.trainer.num_gpus, 1),
+            shuffle=training,
+        )
         return DataLoader(
             dataset,
             batch_size=batch_size,
-            shuffle=training,
+            sampler=sampler,
             num_workers=self.hparams.num_dataloader_workers,
             collate_fn=self._get_collate_fn(training),
             pin_memory=True,
@@ -489,8 +519,8 @@ class BiencoderLightningModule(LightningModule):
 
         # set up the learning rate scheduler
         num_training_steps = int(
-            len(self._train_dataset)
-            // (self.hparams.train_batch_size * max(self.trainer.num_gpus, 1))
+            len(self.train_dataloader().sampler)
+            // self.hparams.train_batch_size
             // self.trainer.accumulate_grad_batches
             * float(self.hparams.max_epochs)
         )

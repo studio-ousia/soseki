@@ -15,7 +15,7 @@ def main(args: Namespace) -> None:
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
     trainer = Trainer.from_argparse_args(
-        args, default_root_dir=args.output_dir, callbacks=[checkpoint_callback, lr_monitor]
+        args, default_root_dir=args.output_dir, callbacks=[checkpoint_callback, lr_monitor], replace_sampler_ddp=False
     )
     trainer.fit(model)
 
