@@ -37,14 +37,16 @@ def main(args: Namespace):
             # get embeddings of the passages
             titles = [passage.title for passage in passages]
             texts = [passage.text for passage in passages]
-            encoder_inputs = dict(biencoder.tokenization.tokenize_passages(
-                titles,
-                texts,
-                padding=True,
-                truncation="only_second",
-                max_length=args.max_passage_length,
-                return_tensors="pt",
-            ))
+            encoder_inputs = dict(
+                biencoder.tokenization.tokenize_passages(
+                    titles,
+                    texts,
+                    padding=True,
+                    truncation="only_second",
+                    max_length=args.max_passage_length,
+                    return_tensors="pt",
+                )
+            )
             if device_ids:
                 encoder_inputs = {key: tensor.to(device_ids[0]) for key, tensor in encoder_inputs.items()}
 

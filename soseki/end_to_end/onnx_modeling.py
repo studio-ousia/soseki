@@ -12,7 +12,7 @@ from ..reader.tokenization import ReaderTokenization
 from ..utils.data_utils import AnswerCandidate, RetrievedPassage
 
 
-class OnnxEndToEndQuestionAnswering():
+class OnnxEndToEndQuestionAnswering:
     def __init__(
         self,
         onnx_model_dir: str,

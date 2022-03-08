@@ -13,7 +13,7 @@ from torch.utils.data import ConcatDataset, Sampler
 class Passage:
     id: int
     title: Optional[str] = None
-    text:  Optional[str] = None
+    text: Optional[str] = None
 
 
 @dataclass
@@ -79,10 +79,13 @@ class WeightedConcatDatasetSampler(Sampler):
         self.num_replicas = num_replicas
         self.rank = rank
 
-        self.num_samples = sum(
-            int(len(dataset) * weight) // self.chunk_size * self.chunk_size
-            for dataset, weight in zip(self.concat_dataset.datasets, self.weights)
-        ) // self.num_replicas
+        self.num_samples = (
+            sum(
+                int(len(dataset) * weight) // self.chunk_size * self.chunk_size
+                for dataset, weight in zip(self.concat_dataset.datasets, self.weights)
+            )
+            // self.num_replicas
+        )
         self.total_size = self.num_samples * self.num_replicas
         self.epoch = 0
 
@@ -102,16 +105,14 @@ class WeightedConcatDatasetSampler(Sampler):
             sample_idxs = []
             for _ in range(int(weight) + 1):
                 if self.shuffle:
-                    sample_idxs.extend(
-                        (torch.randperm(dataset_size, generator=generator) + cumulative_size).tolist()
-                    )
+                    sample_idxs.extend((torch.randperm(dataset_size, generator=generator) + cumulative_size).tolist())
                 else:
                     sample_idxs.extend(list(range(cumulative_size, cumulative_size + dataset_size)))
 
-            sample_idxs = sample_idxs[:int(dataset_size * weight)]
+            sample_idxs = sample_idxs[: int(dataset_size * weight)]
 
             for i in range(0, len(sample_idxs), self.chunk_size):
-                chunk = sample_idxs[i:i + self.chunk_size]
+                chunk = sample_idxs[i : i + self.chunk_size]
                 if len(chunk) < self.chunk_size:
                     break
 
@@ -127,7 +128,7 @@ class WeightedConcatDatasetSampler(Sampler):
         flattened_sample_idxs = [sample_idx for chunk_idx in chunk_idxs for sample_idx in sample_idx_chunks[chunk_idx]]
 
         # subsample
-        indices = flattened_sample_idxs[self.rank:self.total_size:self.num_replicas]
+        indices = flattened_sample_idxs[self.rank : self.total_size : self.num_replicas]
         assert len(indices) == self.num_samples
 
         return iter(indices)
@@ -217,17 +218,14 @@ def batch_iter(iterable: Iterable, batch_size: int) -> Iterable:
 
 
 def find_sublist_slices(
-    small_list: List,
-    large_list: List,
-    start: int = 0,
-    end: Optional[int] = None
+    small_list: List, large_list: List, start: int = 0, end: Optional[int] = None
 ) -> List[Tuple[int, int]]:
     if end is None:
         end = len(large_list)
 
     slices = []
     for i in range(start, end - len(small_list) + 1):
-        if large_list[i:i + len(small_list)] == small_list:
+        if large_list[i : i + len(small_list)] == small_list:
             slices.append((i, i + len(small_list)))
 
     return slices

@@ -57,7 +57,7 @@ class ReaderTokenization:
             answer_slices = find_sublist_slices(
                 answer_token_ids,
                 input_token_ids,
-                start=input_token_ids.index(sep_token_id) if sep_token_id in input_token_ids else 0
+                start=input_token_ids.index(sep_token_id) if sep_token_id in input_token_ids else 0,
             )
             for start, stop in answer_slices:
                 answer_spans.append((start, stop - 1))
@@ -95,15 +95,15 @@ class ReaderTokenization:
         # extract all possible spans no longer than max_answer_length
         possible_spans: List[AnswerSpan] = []
         for start, start_logit in enumerate(start_logits):
-            for end, end_logit in enumerate(end_logits[start:start + max_answer_length], start=start):
+            for end, end_logit in enumerate(end_logits[start : start + max_answer_length], start=start):
                 # ignore spans stretching out of the passage
-                if any(x != 1 for x in attention_mask[start:end + 1]):
+                if any(x != 1 for x in attention_mask[start : end + 1]):
                     continue
-                if any(x != 1 for x in token_type_ids[start:end + 1]):
+                if any(x != 1 for x in token_type_ids[start : end + 1]):
                     continue
 
                 # ignore spans containing [SEP] tokens
-                if any(x == self.tokenizer.sep_token_id for x in input_ids[start:end + 1]):
+                if any(x == self.tokenizer.sep_token_id for x in input_ids[start : end + 1]):
                     continue
 
                 possible_spans.append(AnswerSpan(start, end, start_logit, end_logit))
@@ -157,11 +157,11 @@ class ReaderTokenization:
     ) -> Tuple[str, str]:
         input_tokens = self.tokenizer.convert_ids_to_tokens(input_ids)
 
-        answer_tokens = input_tokens[answer_span.start:answer_span.end + 1]
+        answer_tokens = input_tokens[answer_span.start : answer_span.end + 1]
 
         passage_start = token_type_ids.index(1)
         passage_length = token_type_ids.count(1)
-        passage_tokens = input_tokens[passage_start:passage_start + passage_length]
+        passage_tokens = input_tokens[passage_start : passage_start + passage_length]
 
         answer_text = self.tokenizer.convert_tokens_to_string(answer_tokens)
         passage_text = self.tokenizer.convert_tokens_to_string(passage_tokens)

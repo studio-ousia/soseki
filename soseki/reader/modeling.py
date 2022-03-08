@@ -166,7 +166,7 @@ class ReaderLightningModule(LightningModule):
         return dataset
 
     def _load_gold_passages_file(file_path: str) -> Tuple[Dict[str, RetrievedPassage], Dict[str, str]]:
-        gold_passage_info = {}        # question or question_tokens -> passage
+        gold_passage_info = {}  # question or question_tokens -> passage
         canonical_question_info = {}  # question_tokens -> question
 
         with open(file_path) as f:
@@ -216,7 +216,7 @@ class ReaderLightningModule(LightningModule):
 
         if training:
             if self.hparams.train_max_load_passages is not None:
-                passages = passages[:self.hparams.train_max_load_passages]
+                passages = passages[: self.hparams.train_max_load_passages]
 
             positive_passage_idxs = [idx for idx, p in enumerate(passages) if p.has_answer and has_any_answer_span(p)]
             negative_passage_idxs = [idx for idx, p in enumerate(passages) if not p.has_answer]
@@ -233,7 +233,7 @@ class ReaderLightningModule(LightningModule):
                 positive_passage_idxs = gold_positive_passage_idxs
             else:
                 if self.hparams.train_max_load_positive_passages is not None:
-                    positive_passage_idxs = positive_passage_idxs[:self.hparams.train_max_load_positive_passages]
+                    positive_passage_idxs = positive_passage_idxs[: self.hparams.train_max_load_positive_passages]
 
             # if specified so and possible, include the question's gold passage in the positive passages
             if include_gold_passage and gold_passage is not None:
@@ -243,11 +243,11 @@ class ReaderLightningModule(LightningModule):
                         positive_passage_idxs.append(len(passages) - 1)
 
             if self.hparams.train_max_load_negative_passages is not None:
-                negative_passage_idxs = negative_passage_idxs[:self.hparams.train_max_load_negative_passages]
+                negative_passage_idxs = negative_passage_idxs[: self.hparams.train_max_load_negative_passages]
 
         else:
             if self.hparams.eval_max_load_passages is not None:
-                passages = passages[:self.hparams.eval_max_load_passages]
+                passages = passages[: self.hparams.eval_max_load_passages]
 
             positive_passage_idxs = [i for i, p in enumerate(passages) if p.has_answer and has_any_answer_span(p)]
             negative_passage_idxs = [i for i, p in enumerate(passages) if not p.has_answer]
@@ -351,7 +351,7 @@ class ReaderLightningModule(LightningModule):
                         truncation="only_second",
                         max_length=self.hparams.max_input_length,
                     )
-                    answer_spans = answer_spans[:self.hparams.max_answer_spans]
+                    answer_spans = answer_spans[: self.hparams.max_answer_spans]
                     answers_padding_length = self.hparams.max_answer_spans - len(answer_spans)
                     answer_starts = [span[0] for span in answer_spans] + [0] * answers_padding_length
                     answer_ends = [span[1] for span in answer_spans] + [0] * answers_padding_length
@@ -423,8 +423,8 @@ class ReaderLightningModule(LightningModule):
                     passage_count += 1
 
             # check and modify dimentionality of the tensors
-            Q = len(batch_examples)            # the number of questions in the batch
-            P = num_passages_per_question      # the number of passages per question
+            Q = len(batch_examples)  # the number of questions in the batch
+            P = num_passages_per_question  # the number of passages per question
             L = self.hparams.max_input_length  # the sequence length of inputs (question + passage)
             A = self.hparams.max_answer_spans  # the number of answer spans per question
 
@@ -433,19 +433,19 @@ class ReaderLightningModule(LightningModule):
             token_type_ids = torch.tensor(token_type_ids).reshape(Q, P, L)
             example_idx = torch.tensor(example_idx)
             passage_idxs = torch.tensor(passage_idxs).reshape(Q, P)
-            assert input_ids.size()      == (Q, P, L)
+            assert input_ids.size() == (Q, P, L)
             assert attention_mask.size() == (Q, P, L)
             assert token_type_ids.size() == (Q, P, L)
-            assert example_idx.size()    == (Q,)
-            assert passage_idxs.size()   == (Q, P)
+            assert example_idx.size() == (Q,)
+            assert passage_idxs.size() == (Q, P)
 
             if training:
                 start_positions = torch.tensor(start_positions)
                 end_positions = torch.tensor(end_positions)
                 answer_mask = torch.tensor(answer_mask)
                 assert start_positions.size() == (Q, A)
-                assert end_positions.size()   == (Q, A)
-                assert answer_mask.size()     == (Q, A)
+                assert end_positions.size() == (Q, A)
+                assert answer_mask.size() == (Q, A)
             else:
                 start_positions = None
                 end_positions = None
@@ -472,7 +472,7 @@ class ReaderLightningModule(LightningModule):
 
         # check the tensor sizes
         Q, P, L = input_ids.size()
-        assert input_ids.size()      == (Q, P, L)
+        assert input_ids.size() == (Q, P, L)
         assert attention_mask.size() == (Q, P, L)
         assert token_type_ids.size() == (Q, P, L)
 
@@ -496,8 +496,8 @@ class ReaderLightningModule(LightningModule):
         Q, P = classifier_logits.size()
         _, _, L = start_logits.size()
         assert classifier_logits.size() == (Q, P)
-        assert start_logits.size()      == (Q, P, L)
-        assert end_logits.size()        == (Q, P, L)
+        assert start_logits.size() == (Q, P, L)
+        assert end_logits.size() == (Q, P, L)
 
         # classifier loss
         classifier_label = classifier_logits.new_zeros(Q, dtype=torch.long)  # positive passage is always at 0th
@@ -510,7 +510,7 @@ class ReaderLightningModule(LightningModule):
 
         # answer span loss
         start_logits = start_logits[:, 0, :]  # since we compute answer span losses of the positive passages,
-        end_logits = end_logits[:, 0, :]      # we take logits for the 0th passages only
+        end_logits = end_logits[:, 0, :]  # we take logits for the 0th passages only
         answer_span_loss = self._compute_answer_span_loss(
             start_logits=start_logits,
             end_logits=end_logits,
@@ -521,7 +521,7 @@ class ReaderLightningModule(LightningModule):
 
         loss = classifier_loss + answer_span_loss
         self.log("loss", loss)
-        self.log("classifier_loss", classifier_loss.detach())    # detaching is necessary for logging
+        self.log("classifier_loss", classifier_loss.detach())  # detaching is necessary for logging
         self.log("answer_span_loss", answer_span_loss.detach())
 
         return loss
@@ -553,8 +553,8 @@ class ReaderLightningModule(LightningModule):
         Q, P = classifier_logits.size()
         _, _, L = start_logits.size()
         assert classifier_logits.size() == (Q, P)
-        assert start_logits.size()      == (Q, P, L)
-        assert end_logits.size()        == (Q, P, L)
+        assert start_logits.size() == (Q, P, L)
+        assert end_logits.size() == (Q, P, L)
 
         # classifier precision
         classifier_precision = self._compute_classifier_precision(
@@ -597,10 +597,10 @@ class ReaderLightningModule(LightningModule):
 
         if distributed_available():
             # we need to ensure that there is no replication of datapoints
-            # cf. https://torchmetrics.readthedocs.io/en/latest/pages/overview.html#metrics-in-distributed-data-parallel-ddp-mode
-            classifier_precision = self.all_gather(classifier_precision).transpose(0, 1).flatten()[:len(eval_dataset)]
-            answer_accuracy = self.all_gather(answer_accuracy).transpose(0, 1).flatten()[:len(eval_dataset)]
-            example_idx = self.all_gather(example_idx).transpose(0, 1).flatten()[:len(eval_dataset)]
+            # cf. https://torchmetrics.readthedocs.io/en/latest/pages/overview.html#metrics-in-distributed-data-parallel-ddp-mode  # noqa: E501
+            classifier_precision = self.all_gather(classifier_precision).transpose(0, 1).flatten()[: len(eval_dataset)]
+            answer_accuracy = self.all_gather(answer_accuracy).transpose(0, 1).flatten()[: len(eval_dataset)]
+            example_idx = self.all_gather(example_idx).transpose(0, 1).flatten()[: len(eval_dataset)]
             assert all(example_idx == torch.arange(example_idx.size(0)).to(example_idx.device))
 
         # aggregate and log the metrics
@@ -618,8 +618,8 @@ class ReaderLightningModule(LightningModule):
         # check the tensor sizes
         Q, P = classifier_logits.size()
         assert classifier_logits.size() == (Q, P)
-        assert classifier_label.size()  == (Q,)
-        assert passage_mask.size()   == (Q, P)
+        assert classifier_label.size() == (Q,)
+        assert passage_mask.size() == (Q, P)
 
         mask_value = -1e4 if classifier_logits.dtype == torch.float16 else -1e8
 
@@ -639,11 +639,11 @@ class ReaderLightningModule(LightningModule):
         # check the tensor sizes
         Q, L = start_logits.size()
         _, A = start_positions.size()
-        assert start_logits.size()      == (Q, L)
-        assert end_logits.size()        == (Q, L)
-        assert start_positions.size()   == (Q, A)
-        assert end_positions.size()     == (Q, A)
-        assert answer_mask.size()       == (Q, A)
+        assert start_logits.size() == (Q, L)
+        assert end_logits.size() == (Q, L)
+        assert start_positions.size() == (Q, A)
+        assert end_positions.size() == (Q, A)
+        assert answer_mask.size() == (Q, A)
 
         start_probs = F.softmax(start_logits, dim=1)
         end_probs = F.softmax(end_logits, dim=1)
@@ -670,8 +670,8 @@ class ReaderLightningModule(LightningModule):
         # check the tensor sizes
         Q, P = classifier_logits.size()
         assert classifier_logits.size() == (Q, P)
-        assert example_idx.size()     == (Q,)
-        assert passage_idxs.size()      == (Q, P)
+        assert example_idx.size() == (Q,)
+        assert passage_idxs.size() == (Q, P)
 
         classifier_precision = classifier_logits.new_zeros(Q)
 
@@ -697,13 +697,13 @@ class ReaderLightningModule(LightningModule):
     ) -> Tensor:
         # check the tensor sizes
         Q, P, L = start_logits.size()
-        assert input_ids.size()         == (Q, P, L)
-        assert attention_mask.size()    == (Q, P, L)
-        assert token_type_ids.size()    == (Q, P, L)
+        assert input_ids.size() == (Q, P, L)
+        assert attention_mask.size() == (Q, P, L)
+        assert token_type_ids.size() == (Q, P, L)
         assert classifier_logits.size() == (Q, P)
-        assert start_logits.size()      == (Q, P, L)
-        assert end_logits.size()        == (Q, P, L)
-        assert example_idx.size()     == (Q,)
+        assert start_logits.size() == (Q, P, L)
+        assert end_logits.size() == (Q, P, L)
+        assert example_idx.size() == (Q,)
 
         answer_precision = classifier_logits.new_zeros(Q)
 
@@ -744,17 +744,17 @@ class ReaderLightningModule(LightningModule):
     ) -> List[List[AnswerCandidate]]:
         # check the tensor sizes
         Q, P, L = input_ids.size()
-        assert input_ids.size()         == (Q, P, L)
-        assert attention_mask.size()    == (Q, P, L)
-        assert token_type_ids.size()    == (Q, P, L)
+        assert input_ids.size() == (Q, P, L)
+        assert attention_mask.size() == (Q, P, L)
+        assert token_type_ids.size() == (Q, P, L)
         assert classifier_logits.size() == (Q, P)
-        assert start_logits.size()      == (Q, P, L)
-        assert end_logits.size()        == (Q, P, L)
+        assert start_logits.size() == (Q, P, L)
+        assert end_logits.size() == (Q, P, L)
 
         # obtain passage indices with highest classifier logits for each question
         top_classifier_logits, top_passage_idxs = classifier_logits.topk(num_reading_passages, dim=1)
         assert top_classifier_logits.size() == (Q, min(P, num_reading_passages))
-        assert top_passage_idxs.size()   == (Q, min(P, num_reading_passages))
+        assert top_passage_idxs.size() == (Q, min(P, num_reading_passages))
 
         batch_answer_candidates: List[List[AnswerCandidate]] = []
         for qi in range(Q):
@@ -799,7 +799,7 @@ class ReaderLightningModule(LightningModule):
         # set up the optimizer
         optimizer_parameters = [
             {"params": [], "weight_decay": 0.0},
-            {"params": [], "weight_decay": self.hparams.weight_decay}
+            {"params": [], "weight_decay": self.hparams.weight_decay},
         ]
         for name, param in self.named_parameters():
             if not param.requires_grad:

@@ -144,13 +144,15 @@ def main(args: Namespace):
         for batch_tuples in batch_iter(dataset_iterator, batch_size=args.batch_size):
             questions, answer_lists, positive_passage_id_lists = list(zip(*batch_tuples))
             with torch.no_grad():
-                encoder_inputs = dict(encoder_tokenization.tokenize_questions(
-                    questions,
-                    padding=True,
-                    truncation=True,
-                    max_length=args.max_question_length,
-                    return_tensors="pt",
-                ))
+                encoder_inputs = dict(
+                    encoder_tokenization.tokenize_questions(
+                        questions,
+                        padding=True,
+                        truncation=True,
+                        max_length=args.max_question_length,
+                        return_tensors="pt",
+                    )
+                )
                 if device_ids:
                     encoder_inputs = {key: tensor.to(device_ids[0]) for key, tensor in encoder_inputs.items()}
 
@@ -176,8 +178,7 @@ def main(args: Namespace):
 
                     if args.eval_mode == "has_answer":
                         has_answer = any(
-                            passage_has_answer(answer, passage, match_type=args.answer_match_type)
-                            for answer in answers
+                            passage_has_answer(answer, passage, match_type=args.answer_match_type) for answer in answers
                         )
                         retrieved_passage.has_answer = has_answer
                         if has_answer and positive_rank is None:
