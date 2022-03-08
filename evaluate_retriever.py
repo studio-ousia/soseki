@@ -1,5 +1,4 @@
 import ast
-import csv
 import dataclasses
 import logging
 import re
@@ -14,7 +13,7 @@ from tqdm import tqdm
 from soseki.biencoder.modeling import BiencoderLightningModule
 from soseki.retriever.binary_retriever import BinaryRetriever
 from soseki.retriever.dense_retriever import DenseRetriever
-from soseki.utils.data_utils import batch_iter, writeitem_json
+from soseki.utils.data_utils import batch_iter, readitem_json, readitem_tsv, writeitem_json
 
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s")
@@ -87,7 +86,27 @@ def passage_has_answer(answer: str, passage: str, match_type: str = "dpr_string"
     return False
 
 
+def read_qa_file(qa_file: str):
+    for row in readitem_tsv(qa_file):
+        question = row[0]
+        answers = ast.literal_eval(row[1])
+        yield question, answers, None
+
+
+def read_retriever_file(retriever_file: str):
+    for item in readitem_json(retriever_file):
+        question = item["question"]
+        answers = item["answers"]
+        positive_passage_ids = [str(ctx["passage_id"]) for ctx in item["positive_ctxs"]]
+        yield question, answers, positive_passage_ids
+
+
 def main(args: Namespace):
+    if (args.qa_file is not None) == (args.retriever_file is not None):
+        raise KeyError("Only one of --qa_file or --retriever_file must be specified.")
+    if args.eval_mode == "is_labeled_positive" and args.retriever_file is None:
+        raise KeyError("When --eval_mode is set to is_labeled_positive, --retriever_file must be specified.")
+
     # initialize question encoder and its tokenization
     biencoder = BiencoderLightningModule.load_from_checkpoint(args.biencoder_file, map_location="cpu")
     question_encoder = biencoder.question_encoder.eval()
@@ -116,11 +135,14 @@ def main(args: Namespace):
     positive_ranks = []
     output_items = []
 
-    with open(args.qa_file) as f, tqdm() as pbar:
-        for rows in batch_iter(csv.reader(f, delimiter="\t"), batch_size=args.batch_size):
-            questions = [row[0] for row in rows]
-            answer_lists = [ast.literal_eval(row[1]) for row in rows]
+    if args.qa_file is not None:
+        dataset_iterator = read_qa_file(args.qa_file)
+    else:
+        dataset_iterator = read_retriever_file(args.retriever_file)
 
+    with tqdm() as pbar:
+        for batch_tuples in batch_iter(dataset_iterator, batch_size=args.batch_size):
+            questions, answer_lists, positive_passage_id_lists = list(zip(*batch_tuples))
             with torch.no_grad():
                 encoder_inputs = dict(encoder_tokenization.tokenize_questions(
                     questions,
@@ -141,7 +163,9 @@ def main(args: Namespace):
             else:
                 retrieved_passage_lists = retriever.retrieve_top_k_passages(encoded_questions, k=retrieval_k)
 
-            for question, answers, retrieved_passages in zip(questions, answer_lists, retrieved_passage_lists):
+            for question, answers, positive_passage_ids, retrieved_passages in zip(
+                questions, answer_lists, positive_passage_id_lists, retrieved_passage_lists
+            ):
                 positive_rank = None
                 output_ctxs = []
                 for rank, retrieved_passage in enumerate(retrieved_passages, start=1):
@@ -150,20 +174,25 @@ def main(args: Namespace):
                     else:
                         passage = retrieved_passage.text
 
-                    has_answer = any(
-                        passage_has_answer(answer, passage, match_type=args.answer_match_type)
-                        for answer in answers
-                    )
-                    retrieved_passage.has_answer = has_answer
-                    output_ctxs.append(dataclasses.asdict(retrieved_passage))
+                    if args.eval_mode == "has_answer":
+                        has_answer = any(
+                            passage_has_answer(answer, passage, match_type=args.answer_match_type)
+                            for answer in answers
+                        )
+                        retrieved_passage.has_answer = has_answer
+                        if has_answer and positive_rank is None:
+                            positive_rank = rank
 
-                    if has_answer and positive_rank is None:
-                        positive_rank = rank
+                    elif args.eval_mode == "is_labeled_positive":
+                        if str(retrieved_passage.id) in positive_passage_ids and positive_rank is None:
+                            positive_rank = rank
+
+                    output_ctxs.append(dataclasses.asdict(retrieved_passage))
 
                 output_items.append({"question": question, "answers": answers, "ctxs": output_ctxs})
                 positive_ranks.append(positive_rank if positive_rank is not None else num_passages)
 
-            pbar.update(len(rows))
+            pbar.update(len(batch_tuples))
 
     for k in sorted(top_ks):
         num_correct_at_k = sum(int(rank <= k) for rank in positive_ranks)
@@ -179,8 +208,10 @@ if __name__ == "__main__":
     parser.add_argument("--biencoder_file", type=str, required=True)
     parser.add_argument("--passage_db_file", type=str, required=True)
     parser.add_argument("--passage_embeddings_file", type=str, required=True)
-    parser.add_argument("--qa_file", type=str, required=True)
+    parser.add_argument("--qa_file", type=str)
+    parser.add_argument("--retriever_file", type=str)
     parser.add_argument("--output_file", type=str)
+    parser.add_argument("--eval_mode", choices=("has_answer", "is_labeled_positive"), default="has_answer")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--max_question_length", type=int, default=256)
     parser.add_argument("--top_k", type=str, default="1,5,20,50,100")
