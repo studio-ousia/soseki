@@ -1,3 +1,4 @@
+import csv
 import gzip
 import json
 from dataclasses import dataclass
@@ -178,6 +179,15 @@ def readitem_json(input_file: str, read_json_lines: Optional[bool] = None):
         with gzip.open(input_file, "rt") if input_file.endswith(".gz") else open(input_file) as f:
             for item in json.load(f):
                 yield item
+
+
+def readitem_tsv(input_file: str, skip_header: bool = False):
+    with gzip.open(input_file, "rt") if input_file.endswith(".gz") else open(input_file) as f:
+        for i, row in enumerate(csv.reader(f, delimiter="\t")):
+            if i == 0 and skip_header:
+                continue
+
+            yield row
 
 
 def writeitem_json(items: Iterable[Any], output_file: str, write_json_lines: Optional[bool] = None):

@@ -1,23 +1,16 @@
-import csv
-import gzip
 from typing import Iterator
 
 from tqdm import tqdm
 
-from ..utils.data_utils import Passage
+from ..utils.data_utils import Passage, readitem_tsv
 
 
 class InMemoryPassageDB:
     def __init__(self, passage_file: str, skip_header: bool = True):
         self.data = dict()
-        with gzip.open(passage_file, "rt") if passage_file.endswith(".gz") else open(passage_file) as f:
-            tsv_reader = csv.reader(f, delimiter="\t")
-            for i, row in tqdm(enumerate(tsv_reader)):
-                if i == 0 and skip_header:
-                    continue
-
-                passage_id, text, title = row[0], row[1], row[2]
-                self.data[int(passage_id)] = (text, title)
+        for row in tqdm(readitem_tsv(passage_file, skip_header=skip_header)):
+            passage_id, text, title = row[0], row[1], row[2]
+            self.data[int(passage_id)] = (text, title)
 
     def __len__(self):
         return len(self.data)
