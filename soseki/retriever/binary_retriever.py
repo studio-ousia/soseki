@@ -16,9 +16,11 @@ class BinaryRetriever:
         self.faiss_index: faiss.IndexBinaryIDMap2 = faiss.read_index_binary(faiss_index_file)
         if passage_db_file is not None:
             from ..passage_db.lmdb_passage_db import LMDBPassageDB
+
             self.passage_db = LMDBPassageDB(passage_db_file)
         elif passage_file is not None:
             from ..passage_db.in_memory_passage_db import InMemoryPassageDB
+
             self.passage_db = InMemoryPassageDB(passage_file)
         else:
             raise ValueError("Either of passage_db_file or passage_file must be specified.")
@@ -37,9 +39,11 @@ class BinaryRetriever:
         _, passage_ids_array = self.faiss_index.search(binary_encoded_questions, binary_k)
         assert passage_ids_array.shape == (num_questions, binary_k)
 
-        encoded_passages = np.vstack(
-            [np.unpackbits(self.faiss_index.reconstruct(int(pi))) for pi in passage_ids_array.flatten()]
-        ).reshape(num_questions, binary_k, question_dim).astype(np.float32)
+        encoded_passages = (
+            np.vstack([np.unpackbits(self.faiss_index.reconstruct(int(pi))) for pi in passage_ids_array.flatten()])
+            .reshape(num_questions, binary_k, question_dim)
+            .astype(np.float32)
+        )
         encoded_passages = encoded_passages * 2 - 1
         assert encoded_passages.shape == (num_questions, binary_k, question_dim)
 

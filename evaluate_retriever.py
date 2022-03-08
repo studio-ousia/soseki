@@ -122,13 +122,15 @@ def main(args: Namespace):
             answer_lists = [ast.literal_eval(row[1]) for row in rows]
 
             with torch.no_grad():
-                encoder_inputs = dict(encoder_tokenization.tokenize_questions(
-                    questions,
-                    padding=True,
-                    truncation=True,
-                    max_length=args.max_question_length,
-                    return_tensors="pt",
-                ))
+                encoder_inputs = dict(
+                    encoder_tokenization.tokenize_questions(
+                        questions,
+                        padding=True,
+                        truncation=True,
+                        max_length=args.max_question_length,
+                        return_tensors="pt",
+                    )
+                )
                 if device_ids:
                     encoder_inputs = {key: tensor.to(device_ids[0]) for key, tensor in encoder_inputs.items()}
 
@@ -151,8 +153,7 @@ def main(args: Namespace):
                         passage = retrieved_passage.text
 
                     has_answer = any(
-                        passage_has_answer(answer, passage, match_type=args.answer_match_type)
-                        for answer in answers
+                        passage_has_answer(answer, passage, match_type=args.answer_match_type) for answer in answers
                     )
                     retrieved_passage.has_answer = has_answer
                     output_ctxs.append(dataclasses.asdict(retrieved_passage))

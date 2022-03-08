@@ -174,8 +174,7 @@ class BiencoderLightningModule(LightningModule):
         answers = item.pop("answers")
 
         positive_passages = [
-            Passage(id=ctx.get("passage_id"), title=ctx["title"], text=ctx["text"])
-            for ctx in item.pop("positive_ctxs")
+            Passage(id=ctx.get("passage_id"), title=ctx["title"], text=ctx["text"]) for ctx in item.pop("positive_ctxs")
         ]
         if max_load_positive_passages is not None:
             positive_passages = positive_passages[:max_load_positive_passages]
@@ -188,8 +187,7 @@ class BiencoderLightningModule(LightningModule):
             hard_negative_passages = hard_negative_passages[:max_load_hard_negative_passages]
 
         normal_negative_passages = [
-            Passage(id=ctx.get("passage_id"), title=ctx["title"], text=ctx["text"])
-            for ctx in item.pop("negative_ctxs")
+            Passage(id=ctx.get("passage_id"), title=ctx["title"], text=ctx["text"]) for ctx in item.pop("negative_ctxs")
         ]
         if max_load_normal_negative_passages is not None:
             normal_negative_passages = normal_negative_passages[:max_load_normal_negative_passages]
@@ -265,7 +263,7 @@ class BiencoderLightningModule(LightningModule):
                     random.shuffle(hard_negative_passages)
 
                 if self.hparams.max_hard_negative_passages is not None:
-                    hard_negative_passages = hard_negative_passages[:self.hparams.max_hard_negative_passages]
+                    hard_negative_passages = hard_negative_passages[: self.hparams.max_hard_negative_passages]
 
                 # select normal negative passages
                 normal_negative_passages = example.normal_negative_passages
@@ -273,11 +271,11 @@ class BiencoderLightningModule(LightningModule):
                     random.shuffle(normal_negative_passages)
 
                 if self.hparams.max_normal_negative_passages is not None:
-                    normal_negative_passages = normal_negative_passages[:self.hparams.max_normal_negative_passages]
+                    normal_negative_passages = normal_negative_passages[: self.hparams.max_normal_negative_passages]
 
                 # concatenate negative passages; hard negative passages are prioritized
-                negative_passages = (hard_negative_passages + normal_negative_passages)
-                negative_passages = negative_passages[:self.hparams.num_negative_passages]
+                negative_passages = hard_negative_passages + normal_negative_passages
+                negative_passages = negative_passages[: self.hparams.num_negative_passages]
                 if len(negative_passages) < self.hparams.num_negative_passages:
                     raise ValueError("--num_negative_passages is larger than retrieved negative passages.")
 
@@ -312,17 +310,17 @@ class BiencoderLightningModule(LightningModule):
             passage_label = torch.tensor(labels)
 
             # check dimensionality of the tensors
-            Q = len(batch_examples)                     # the number of questions in the batch
+            Q = len(batch_examples)  # the number of questions in the batch
             P = 1 + self.hparams.num_negative_passages  # the number of passages per question
-            Lq = self.hparams.max_question_length       # the sequence length of questions
-            Lp = self.hparams.max_passage_length        # the sequence length of passages
-            assert question_input_ids.size()      == (Q, Lq)
+            Lq = self.hparams.max_question_length  # the sequence length of questions
+            Lp = self.hparams.max_passage_length  # the sequence length of passages
+            assert question_input_ids.size() == (Q, Lq)
             assert question_attention_mask.size() == (Q, Lq)
             assert question_token_type_ids.size() == (Q, Lq)
-            assert passage_input_ids.size()       == (Q * P, Lp)
-            assert passage_attention_mask.size()  == (Q * P, Lp)
-            assert passage_token_type_ids.size()  == (Q * P, Lp)
-            assert passage_label.size()           == (Q * P,)
+            assert passage_input_ids.size() == (Q * P, Lp)
+            assert passage_attention_mask.size() == (Q * P, Lp)
+            assert passage_token_type_ids.size() == (Q * P, Lp)
+            assert passage_label.size() == (Q * P,)
 
             batch_tensors = {
                 "question_input_ids": question_input_ids,
@@ -471,7 +469,7 @@ class BiencoderLightningModule(LightningModule):
         # set up the optimizer
         optimizer_parameters = [
             {"params": [], "weight_decay": 0.0},
-            {"params": [], "weight_decay": self.hparams.weight_decay}
+            {"params": [], "weight_decay": self.hparams.weight_decay},
         ]
         for name, param in self.named_parameters():
             if not param.requires_grad:

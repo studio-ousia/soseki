@@ -8,7 +8,7 @@ from ..retriever.dense_retriever import DenseRetriever
 from ..reader.modeling import ReaderLightningModule
 
 
-class EndToEndQuestionAnswering():
+class EndToEndQuestionAnswering:
     def __init__(
         self,
         biencoder_ckpt_file: str,
@@ -45,13 +45,15 @@ class EndToEndQuestionAnswering():
         num_answer_candidates_per_passage: int = 1,
     ):
         with torch.no_grad():
-            encoder_inputs = dict(self.biencoder.tokenization.tokenize_questions(
-                question,
-                padding=True,
-                truncation=True,
-                max_length=self.biencoder.hparams.max_question_length,
-                return_tensors="pt",
-            ))
+            encoder_inputs = dict(
+                self.biencoder.tokenization.tokenize_questions(
+                    question,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.biencoder.hparams.max_question_length,
+                    return_tensors="pt",
+                )
+            )
             encoder_inputs = {key: tensor.to(self.device) for key, tensor in encoder_inputs.items()}
             encoded_questions = self.biencoder.question_encoder(**encoder_inputs).cpu().numpy()
 

@@ -1,6 +1,6 @@
 from typing import List, Union
 
-from transformers import AutoTokenizer, T5Tokenizer
+from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 
 
