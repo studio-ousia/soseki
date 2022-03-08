@@ -16,18 +16,16 @@ class DenseRetriever:
         self.faiss_index: faiss.IndexIDMap2 = faiss.read_index(faiss_index_file)
         if passage_db_file is not None:
             from ..passage_db.lmdb_passage_db import LMDBPassageDB
+
             self.passage_db = LMDBPassageDB(passage_db_file)
         elif passage_file is not None:
             from ..passage_db.in_memory_passage_db import InMemoryPassageDB
+
             self.passage_db = InMemoryPassageDB(passage_file)
         else:
             raise ValueError("Either of passage_db_file or passage_file must be specified.")
 
-    def retrieve_top_k_passages(
-        self,
-        encoded_questions: np.ndarray,
-        k: int = 10
-    ) -> List[List[RetrievedPassage]]:
+    def retrieve_top_k_passages(self, encoded_questions: np.ndarray, k: int = 10) -> List[List[RetrievedPassage]]:
         num_questions, _ = encoded_questions.shape
 
         scores_array, passage_ids_array = self.index.search(encoded_questions, k)

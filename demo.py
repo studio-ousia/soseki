@@ -32,6 +32,7 @@ if args.passage_db_file is None and args.passage_file is None:
 def get_qa_model():
     if args.onnx_model_dir is not None:
         from soseki.end_to_end.onnx_modeling import OnnxEndToEndQuestionAnswering
+
         model = OnnxEndToEndQuestionAnswering(
             onnx_model_dir=args.onnx_model_dir,
             passage_embeddings_file=args.passage_embeddings_file,
@@ -40,6 +41,7 @@ def get_qa_model():
         )
     else:
         from soseki.end_to_end.modeling import EndToEndQuestionAnswering
+
         model = EndToEndQuestionAnswering(
             biencoder_ckpt_file=args.biencoder_ckpt_file,
             reader_ckpt_file=args.reader_ckpt_file,
@@ -86,7 +88,7 @@ if submitted and len(question) > 0:
             st.subheader(emoji + " " + answer_text)
             st.caption("Score: {:.4f}".format(answer_candidate.score))
 
-            with st.expander("Show Passage", expanded=i==0):
+            with st.expander("Show Passage", expanded=i == 0):
                 passage_text = passage_text.replace(answer_text, "**{}**".format(answer_text))
                 passage_text = passage_text.replace("[SEP]", "--", 1)
                 passage_text = passage_text.replace("[SEP]", "")

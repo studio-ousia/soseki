@@ -8,7 +8,7 @@ from typing import Any, Iterable, List, Optional, Tuple
 class Passage:
     id: int
     title: Optional[str] = None
-    text:  Optional[str] = None
+    text: Optional[str] = None
 
 
 @dataclass
@@ -97,17 +97,14 @@ def batch_iter(iterable: Iterable, batch_size: int) -> Iterable:
 
 
 def find_sublist_slices(
-    small_list: List,
-    large_list: List,
-    start: int = 0,
-    end: Optional[int] = None
+    small_list: List, large_list: List, start: int = 0, end: Optional[int] = None
 ) -> List[Tuple[int, int]]:
     if end is None:
         end = len(large_list)
 
     slices = []
     for i in range(start, end - len(small_list) + 1):
-        if large_list[i:i + len(small_list)] == small_list:
+        if large_list[i : i + len(small_list)] == small_list:
             slices.append((i, i + len(small_list)))
 
     return slices
