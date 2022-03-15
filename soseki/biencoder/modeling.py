@@ -5,16 +5,17 @@ from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.optim import Optimizer
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import ConcatDataset, DataLoader
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
 from transformers import AutoModel
-from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup
 
 from .tokenization import EncoderTokenization
 from ..passage_db.lmdb_passage_db import LMDBPassageDB
@@ -34,20 +35,19 @@ class EncoderModel(nn.Module):
         if hasattr(self.encoder, "entity_embeddings"):
             del self.encoder.entity_embeddings
 
-        self._pooling_index = pooling_index
-        self._projection_dim = projection_dim
+        self.pooling_index = pooling_index
 
-        if self._projection_dim is not None:
-            self.projection = nn.Linear(self.encoder.config.hidden_size, projection_dim)
-        else:
-            self.projection = None
+        if projection_dim is not None:
+            self.projection_dense = nn.Linear(self.encoder.config.hidden_size, projection_dim)
+            self.projection_layer_norm = torch.nn.LayerNorm(projection_dim, eps=self.encoder.config.layer_norm_eps)
 
-    def forward(self, input_ids: Tensor, attention_mask: Tensor, token_type_ids: Tensor) -> Dict[str, Tensor]:
-        encoder_output = self.encoder(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        pooled_output = encoder_output[0][:, self._pooling_index, :]
+    def forward(self, input_tensors: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        encoder_output = self.encoder(**input_tensors)
+        pooled_output = encoder_output[0][:, self.pooling_index, :].contiguous()
 
-        if self.projection is not None:
-            pooled_output = self.projection(pooled_output)
+        if hasattr(self, "projection_dense"):
+            pooled_output = self.projection_dense(pooled_output)
+            pooled_output = self.projection_layer_norm(pooled_output)
 
         return pooled_output
 
@@ -182,7 +182,7 @@ class BiencoderLightningModule(LightningModule):
         if not dataset_names:
             dataset_names = list(datasets.keys())
 
-        concat_dataset = ConcatDataset(datasets[dataset_name] for dataset_name in dataset_names)
+        concat_dataset = ConcatDataset([datasets[dataset_name] for dataset_name in dataset_names])
         return concat_dataset
 
     def _create_dataset_example(
@@ -269,7 +269,9 @@ class BiencoderLightningModule(LightningModule):
         )
 
     def _get_collate_fn(self, training: bool) -> Callable:
-        def collate_fn(batch_examples: List[RetrieverDatasetExample]) -> Dict[str, Tensor]:
+        def collate_fn(
+            batch_examples: List[RetrieverDatasetExample],
+        ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor]:
             # passage db is used when the loaded dataset does not have the passage text fields
             if self.hparams.passage_db_file is not None:
                 passage_db = LMDBPassageDB(self.hparams.passage_db_file)
@@ -278,7 +280,7 @@ class BiencoderLightningModule(LightningModule):
 
             tokenized_questions = []
             tokenized_passages = []
-            labels = []
+            passage_labels = []
 
             for example in batch_examples:
                 # tokenize the question
@@ -337,66 +339,60 @@ class BiencoderLightningModule(LightningModule):
                     )
                     tokenized_passages.append(tokenized_passage)
 
-                    labels.append(int(i == 0))  # positive passage is always indexed 0
+                    passage_labels.append(int(i == 0))  # positive passage is always indexed 0
 
             # tensorize the lists of integers
-            question_input_ids = torch.tensor([q["input_ids"] for q in tokenized_questions])
-            question_attention_mask = torch.tensor([q["attention_mask"] for q in tokenized_questions])
-            question_token_type_ids = torch.tensor([q["token_type_ids"] for q in tokenized_questions])
-            passage_input_ids = torch.tensor([p["input_ids"] for p in tokenized_passages])
-            passage_attention_mask = torch.tensor([p["attention_mask"] for p in tokenized_passages])
-            passage_token_type_ids = torch.tensor([p["token_type_ids"] for p in tokenized_passages])
-            passage_label = torch.tensor(labels)
+            tokenized_questions = {
+                key: torch.tensor([q[key] for q in tokenized_questions]) for key in tokenized_questions[0].keys()
+            }
+            tokenized_passages = {
+                key: torch.tensor([p[key] for p in tokenized_passages]) for key in tokenized_passages[0].keys()
+            }
+            passage_labels = torch.tensor(passage_labels)
 
             # check dimensionality of the tensors
             Q = len(batch_examples)  # the number of questions in the batch
             P = 1 + self.hparams.num_negative_passages  # the number of passages per question
             Lq = self.hparams.max_question_length  # the sequence length of questions
             Lp = self.hparams.max_passage_length  # the sequence length of passages
-            assert question_input_ids.size() == (Q, Lq)
-            assert question_attention_mask.size() == (Q, Lq)
-            assert question_token_type_ids.size() == (Q, Lq)
-            assert passage_input_ids.size() == (Q * P, Lp)
-            assert passage_attention_mask.size() == (Q * P, Lp)
-            assert passage_token_type_ids.size() == (Q * P, Lp)
-            assert passage_label.size() == (Q * P,)
+            for tensor in tokenized_questions.values():
+                assert tensor.size() == (Q, Lq)
 
-            batch_tensors = {
-                "question_input_ids": question_input_ids,
-                "question_attention_mask": question_attention_mask,
-                "question_token_type_ids": question_token_type_ids,
-                "passage_input_ids": passage_input_ids,
-                "passage_attention_mask": passage_attention_mask,
-                "passage_token_type_ids": passage_token_type_ids,
-                "passage_label": passage_label,
-            }
-            return batch_tensors
+            for tensor in tokenized_passages.values():
+                assert tensor.size() == (Q * P, Lp)
+
+            assert passage_labels.size() == (Q * P,)
+
+            return (tokenized_questions, tokenized_passages, passage_labels)
 
         return collate_fn
 
-    def forward(self, batch: Dict[str, Tensor]) -> Tuple[Tensor, Tensor]:
-        encoded_question = self.question_encoder(
-            input_ids=batch["question_input_ids"],
-            attention_mask=batch["question_attention_mask"],
-            token_type_ids=batch["question_token_type_ids"],
-        )
-        encoded_passage = self.passage_encoder(
-            input_ids=batch["passage_input_ids"],
-            attention_mask=batch["passage_attention_mask"],
-            token_type_ids=batch["passage_token_type_ids"],
-        )
+    def forward(
+        self,
+        tokenized_questions: Dict[str, Tensor],
+        tokenized_passages: Dict[str, Tensor],
+    ) -> Tuple[Tensor, Tensor]:
+        encoded_question = self.question_encoder(tokenized_questions)
+        encoded_passage = self.passage_encoder(tokenized_passages)
+
         return encoded_question, encoded_passage
 
-    def training_step(self, batch: Dict[str, Tensor], batch_idx: int) -> Tuple[Tensor, Tensor]:
-        encoded_question, encoded_passage = self.forward(batch)
+    def training_step(
+        self,
+        batch: Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor],
+        batch_idx: int,
+    ) -> Tuple[Tensor, Tensor]:
+        tokenized_questions, tokenized_passages, passage_labels = batch
+        encoded_question, encoded_passage = self.forward(tokenized_questions, tokenized_passages)
+
         return encoded_question, encoded_passage
 
     def training_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor]) -> Dict[str, Tensor]:
         encoded_question, encoded_passage = batch_parts_outputs
 
         if distributed_available():
-            encoded_question = self.all_gather(encoded_question, sync_grads=True).reshape(-1, encoded_question.size(-1))
-            encoded_passage = self.all_gather(encoded_passage, sync_grads=True).reshape(-1, encoded_passage.size(-1))
+            encoded_question = self._gather_distributed_tensors(encoded_question)
+            encoded_passage = self._gather_distributed_tensors(encoded_passage)
 
         output = self._compute_loss(encoded_question, encoded_passage)
         for key, value in output.items():
@@ -404,20 +400,26 @@ class BiencoderLightningModule(LightningModule):
 
         return output
 
-    def validation_step(self, batch: Dict[str, Tensor], batch_idx: int) -> Tuple[Tensor, Tensor, Tensor]:
-        encoded_question, encoded_passage = self.forward(batch)
-        return encoded_question, encoded_passage, batch["passage_label"]
+    def validation_step(
+        self,
+        batch: Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor],
+        batch_idx: int,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        tokenized_questions, tokenized_passages, passage_labels = batch
+        encoded_question, encoded_passage = self.forward(tokenized_questions, tokenized_passages)
+
+        return encoded_question, encoded_passage, passage_labels
 
     def validation_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor, Tensor]) -> Dict[str, Tensor]:
-        encoded_question, encoded_passage, labels = batch_parts_outputs
+        encoded_question, encoded_passage, passage_labels = batch_parts_outputs
 
         if distributed_available():
-            encoded_question = self.all_gather(encoded_question, sync_grads=True).reshape(-1, encoded_question.size(-1))
-            encoded_passage = self.all_gather(encoded_passage, sync_grads=True).reshape(-1, encoded_passage.size(-1))
-            labels = self.all_gather(labels, sync_grads=True).reshape(-1)
+            encoded_question = self._gather_distributed_tensors(encoded_question)
+            encoded_passage = self._gather_distributed_tensors(encoded_passage)
+            passage_labels = self._gather_distributed_tensors(passage_labels)
 
         output = self._compute_loss(encoded_question, encoded_passage)
-        output["ranks"] = self._compute_ranks(encoded_question, encoded_passage, labels)
+        output["ranks"] = self._compute_ranks(encoded_question, encoded_passage, passage_labels)
 
         return output
 
@@ -431,6 +433,14 @@ class BiencoderLightningModule(LightningModule):
             avg_rank = 10000000.0
 
         self.log("val_avg_rank", avg_rank)
+
+    def _gather_distributed_tensors(self, input_tensor: Tensor) -> Tensor:
+        tensor_list = [torch.empty_like(input_tensor) for _ in range(dist.get_world_size())]
+        dist.all_gather(tensor_list, input_tensor)
+        # overwrite a portion of the list with a gradient-preserved tensor
+        tensor_list[dist.get_rank()] = input_tensor
+
+        return torch.cat(tensor_list, dim=0)
 
     def _convert_to_binary_code(self, input_tensor: Tensor) -> Tensor:
         if self.training:
@@ -496,9 +506,9 @@ class BiencoderLightningModule(LightningModule):
 
         return output
 
-    def _compute_ranks(self, encoded_question: Tensor, encoded_passage: Tensor, labels: Tensor) -> Tensor:
+    def _compute_ranks(self, encoded_question: Tensor, encoded_passage: Tensor, passage_labels: Tensor) -> Tensor:
         scores = torch.matmul(encoded_question, encoded_passage.transpose(0, 1))
-        gold_positions = labels.nonzero(as_tuple=False).reshape(-1)
+        gold_positions = passage_labels.nonzero(as_tuple=False).reshape(-1)
         gold_scores = scores.gather(1, gold_positions.unsqueeze(1))
         ranks = (scores > gold_scores).sum(1).float() + 1.0
 

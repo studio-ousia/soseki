@@ -14,7 +14,7 @@ class EncoderTokenization:
         else:
             questions = [self._preprocess_question(question) for question in questions]
 
-        return self.tokenizer(questions, return_token_type_ids=True, **kwargs)
+        return self.tokenizer(questions, **kwargs)
 
     def tokenize_passages(self, titles: Union[str, List[str]], texts: Union[str, List[str]], **kwargs) -> BatchEncoding:
         if isinstance(titles, str):
@@ -27,7 +27,7 @@ class EncoderTokenization:
         else:
             texts = [self._preprocess_passage_text(text) for text in texts]
 
-        return self.tokenizer(titles, texts, return_token_type_ids=True, **kwargs)
+        return self.tokenizer(titles, texts, **kwargs)
 
     def _preprocess_question(self, text: str) -> str:
         text = text.rstrip("?")
