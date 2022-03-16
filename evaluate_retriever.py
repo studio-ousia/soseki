@@ -156,7 +156,7 @@ def main(args: Namespace):
                 if device_ids:
                     encoder_inputs = {key: tensor.to(device_ids[0]) for key, tensor in encoder_inputs.items()}
 
-                encoded_questions = question_encoder(**encoder_inputs).cpu().numpy()
+                encoded_questions = question_encoder(encoder_inputs).cpu().numpy()
 
             if args.binary:
                 retrieved_passage_lists = retriever.retrieve_top_k_passages(
