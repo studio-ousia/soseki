@@ -322,7 +322,16 @@ class BiencoderLightningModule(LightningModule):
 
                 # tokenize the passages
                 for i, passage in enumerate([positive_passage] + negative_passages):
+                    passage_title = passage.title
                     passage_text = passage.text
+
+                    if passage_title is None:
+                        if passage_db is not None:
+                            # fetch passage title from passage db
+                            passage_title = passage_db[passage.id].title
+                        else:
+                            raise KeyError("--passage_db_file must be specified if the dataset have no passage titles")
+
                     if passage_text is None:
                         if passage_db is not None:
                             # fetch passage text from passage db
@@ -331,7 +340,7 @@ class BiencoderLightningModule(LightningModule):
                             raise KeyError("--passage_db_file must be specified if the dataset have no passage texts")
 
                     tokenized_passage = self.tokenization.tokenize_passages(
-                        passage.title,
+                        passage_title,
                         passage_text,
                         padding="max_length",
                         truncation="only_second",
