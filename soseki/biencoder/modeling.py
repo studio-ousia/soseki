@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.optim import AdamW, Optimizer
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
@@ -19,7 +19,13 @@ from transformers.optimization import get_linear_schedule_with_warmup
 
 from .tokenization import EncoderTokenization
 from ..passage_db.lmdb_passage_db import LMDBPassageDB
-from ..utils.data_utils import Passage, RetrieverDatasetExample, WeightedConcatDatasetSampler, readitem_json
+from ..utils.data_utils import (
+    MultipleKeyDataset,
+    MultipleKeyDatasetBatchSampler,
+    Passage,
+    RetrieverDatasetExample,
+    readitem_json,
+)
 
 
 class EncoderModel(nn.Module):
@@ -82,10 +88,11 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--dev_file", type=str, required=True)
         parser.add_argument("--passage_db_file", type=str)
 
-        parser.add_argument("--train_dataset_names", nargs="*", type=str)
+        parser.add_argument("--train_dataset_keys", nargs="*", type=str)
         parser.add_argument("--train_dataset_weights", nargs="*", type=float)
-        parser.add_argument("--dev_dataset_names", nargs="*", type=str)
+        parser.add_argument("--dev_dataset_keys", nargs="*", type=str)
         parser.add_argument("--dev_dataset_weights", nargs="*", type=float)
+        parser.add_argument("--use_multiple_key_dataset", action="store_true")
 
         parser.add_argument("--train_max_load_positive_passages", type=int)
         parser.add_argument("--train_max_load_hard_negative_passages", type=int)
@@ -131,7 +138,8 @@ class BiencoderLightningModule(LightningModule):
             rank_zero_info("Loading training data")
             self._train_dataset = self._load_dataset(
                 self.hparams.train_file,
-                dataset_names=self.hparams.train_dataset_names,
+                dataset_keys=self.hparams.train_dataset_keys,
+                use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
                 max_load_positive_passages=self.hparams.train_max_load_positive_passages,
                 max_load_hard_negative_passages=self.hparams.train_max_load_hard_negative_passages,
                 max_load_normal_negative_passages=self.hparams.train_max_load_normal_negative_passages,
@@ -142,7 +150,8 @@ class BiencoderLightningModule(LightningModule):
             rank_zero_info("Loading development data")
             self._dev_dataset = self._load_dataset(
                 self.hparams.dev_file,
-                dataset_names=self.hparams.dev_dataset_names,
+                dataset_keys=self.hparams.dev_dataset_keys,
+                use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
                 max_load_positive_passages=self.hparams.dev_max_load_positive_passages,
                 max_load_hard_negative_passages=self.hparams.dev_max_load_hard_negative_passages,
                 max_load_normal_negative_passages=self.hparams.dev_max_load_normal_negative_passages,
@@ -152,16 +161,21 @@ class BiencoderLightningModule(LightningModule):
     def _load_dataset(
         self,
         dataset_file: str,
-        dataset_names: Optional[List[str]] = None,
+        dataset_keys: Optional[List[str]] = None,
+        use_multiple_key_dataset: bool = False,
         max_load_positive_passages: Optional[int] = None,
         max_load_hard_negative_passages: Optional[int] = None,
         max_load_normal_negative_passages: Optional[int] = None,
-    ) -> ConcatDataset:
+    ) -> Dataset:
         dataset_iterator = readitem_json(dataset_file)
         if self.global_rank == 0:
             dataset_iterator = tqdm(dataset_iterator)
 
-        datasets: Dict[str, List[RetrieverDatasetExample]] = defaultdict(list)
+        if use_multiple_key_dataset:
+            dataset_dict: Dict[str, List[RetrieverDatasetExample]] = defaultdict(list)
+        else:
+            dataset: List[RetrieverDatasetExample] = []
+
         index = 0
         for item in dataset_iterator:
             example = self._create_dataset_example(
@@ -176,14 +190,20 @@ class BiencoderLightningModule(LightningModule):
             if len(example.hard_negative_passages) + len(example.normal_negative_passages) == 0:
                 continue
 
-            datasets[example.dataset].append(example)
+            if use_multiple_key_dataset:
+                if dataset_keys is not None and example.dataset not in dataset_keys:
+                    continue
+
+                dataset_dict[example.dataset].append(example)
+            else:
+                dataset.append(example)
+
             index += 1
 
-        if not dataset_names:
-            dataset_names = list(datasets.keys())
+        if use_multiple_key_dataset:
+            dataset = MultipleKeyDataset(dataset_dict)
 
-        concat_dataset = ConcatDataset([datasets[dataset_name] for dataset_name in dataset_names])
-        return concat_dataset
+        return dataset
 
     def _create_dataset_example(
         self,
@@ -235,6 +255,8 @@ class BiencoderLightningModule(LightningModule):
             dataset=self._train_dataset,
             training=True,
             batch_size=self.hparams.train_batch_size,
+            use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
+            dataset_keys=self.hparams.train_dataset_keys,
             dataset_weights=self.hparams.train_dataset_weights,
         )
 
@@ -243,30 +265,59 @@ class BiencoderLightningModule(LightningModule):
             dataset=self._dev_dataset,
             training=False,
             batch_size=self.hparams.eval_batch_size,
+            use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
+            dataset_keys=self.hparams.dev_dataset_keys,
             dataset_weights=self.hparams.dev_dataset_weights,
         )
 
     def _get_dataloader(
         self,
-        dataset: ConcatDataset,
+        dataset: Dataset,
         training: bool,
         batch_size: int,
-        dataset_weights: Optional[float] = None,
+        use_multiple_key_dataset: bool = False,
+        dataset_keys: Optional[List[str]] = None,
+        dataset_weights: Optional[List[float]] = None,
     ) -> DataLoader:
-        sampler = WeightedConcatDatasetSampler(
-            dataset,
-            weights=dataset_weights,
-            chunk_size=batch_size * max(self.trainer.num_gpus, 1),
-            shuffle=training,
-        )
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            sampler=sampler,
-            num_workers=self.hparams.num_dataloader_workers,
-            collate_fn=self._get_collate_fn(training),
-            pin_memory=True,
-        )
+        if use_multiple_key_dataset:
+            if dataset_keys is not None and dataset_weights is not None:
+                weights = {key: weight for key, weight in zip(dataset_keys, dataset_weights)}
+            else:
+                weights = None
+
+            batch_sampler = MultipleKeyDatasetBatchSampler(
+                dataset,
+                weights=weights,
+                batch_size=batch_size,
+                shuffle=training,
+                distributed=self.trainer._accelerator_connector.is_distributed,
+            )
+            return DataLoader(
+                dataset,
+                batch_sampler=batch_sampler,
+                num_workers=self.hparams.num_dataloader_workers,
+                collate_fn=self._get_collate_fn(training),
+                pin_memory=True,
+            )
+        else:
+            if self.trainer._accelerator_connector.is_distributed:
+                return DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    sampler=DistributedSampler(dataset, shuffle=training),
+                    num_workers=self.hparams.num_dataloader_workers,
+                    collate_fn=self._get_collate_fn(training),
+                    pin_memory=True,
+                )
+            else:
+                return DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    shuffle=training,
+                    num_workers=self.hparams.num_dataloader_workers,
+                    collate_fn=self._get_collate_fn(training),
+                    pin_memory=True,
+                )
 
     def _get_collate_fn(self, training: bool) -> Callable:
         def collate_fn(
@@ -541,8 +592,7 @@ class BiencoderLightningModule(LightningModule):
 
         # set up the learning rate scheduler
         num_training_steps = int(
-            len(self.train_dataloader().sampler)
-            // self.hparams.train_batch_size
+            len(self.train_dataloader().batch_sampler)
             // self.trainer.accumulate_grad_batches
             * float(self.hparams.max_epochs)
         )
