@@ -104,12 +104,9 @@ class MultipleKeyDatasetBatchSampler(Sampler[List[int]]):
         self.rank = rank
 
         self.chunk_size = self.batch_size * self.num_replicas
-        self.num_chunks = (
-            sum(
-                int(len(dataset) * self.weights[key]) // self.chunk_size * self.chunk_size
-                for key, dataset in self.multiple_key_dataset.dataset_dict.items()
-            )
-            // self.chunk_size
+        self.num_chunks = sum(
+            int(len(dataset) * self.weights[key]) // self.chunk_size
+            for key, dataset in self.multiple_key_dataset.dataset_dict.items()
         )
         self.total_size = self.num_chunks * self.chunk_size
         self.epoch = 0
