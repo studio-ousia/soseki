@@ -50,7 +50,7 @@ def main(args: Namespace):
             if device_ids:
                 encoder_inputs = {key: tensor.to(device_ids[0]) for key, tensor in encoder_inputs.items()}
 
-            embeddings = biencoder.passage_encoder(**encoder_inputs).cpu().numpy()
+            embeddings = biencoder.passage_encoder(encoder_inputs).cpu().numpy()
 
             if index is None:
                 # initialize the faiss index with the dimensionality of the embeddings
