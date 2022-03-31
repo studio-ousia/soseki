@@ -290,7 +290,7 @@ class BiencoderLightningModule(LightningModule):
                 weights=weights,
                 batch_size=batch_size,
                 shuffle=training,
-                distributed=self.trainer._accelerator_connector.is_distributed,
+                distributed=distributed_available(),
             )
             return DataLoader(
                 dataset,
@@ -300,7 +300,7 @@ class BiencoderLightningModule(LightningModule):
                 pin_memory=True,
             )
         else:
-            if self.trainer._accelerator_connector.is_distributed:
+            if distributed_available():
                 return DataLoader(
                     dataset,
                     batch_size=batch_size,
