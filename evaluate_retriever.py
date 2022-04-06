@@ -87,10 +87,10 @@ def passage_has_answer(answer: str, passage: str, match_type: str = "dpr_string"
 
 
 def read_qa_file(qa_file: str):
-    for row in readitem_tsv(qa_file):
-        question = row[0]
-        answers = ast.literal_eval(row[1])
-        yield question, answers, None
+    for row in readitem_tsv(qa_file, fieldnames=["question", "answers"]):
+        question = row["question"]
+        answers = ast.literal_eval(row["answers"])
+        yield question, answers, None, None
 
 
 def read_retriever_file(retriever_file: str):
@@ -98,7 +98,8 @@ def read_retriever_file(retriever_file: str):
         question = item["question"]
         answers = item["answers"]
         positive_passage_ids = [str(ctx["passage_id"]) for ctx in item["positive_ctxs"]]
-        yield question, answers, positive_passage_ids
+        dataset = item.get("dataset", None)
+        yield question, answers, positive_passage_ids, dataset
 
 
 def main(args: Namespace):
@@ -113,7 +114,7 @@ def main(args: Namespace):
     encoder_tokenization = biencoder.tokenization
 
     if args.device_ids is not None:
-        device_ids = [int(i) for i in args.device_ids.split(",")]
+        device_ids = args.device_ids
         question_encoder.to(device_ids[0])
         if len(device_ids) > 1:
             question_encoder = DataParallel(question_encoder, device_ids=device_ids)
@@ -129,8 +130,11 @@ def main(args: Namespace):
         retriever = DenseRetriever(args.passage_embeddings_file, args.passage_db_file)
 
     num_passages = len(retriever.passage_db)
-    top_ks = [int(k) for k in args.top_k.split(",")]
-    retrieval_k = max(top_ks)
+
+    if args.retrieval_k is not None:
+        retrieval_k = args.retrieval_k
+    else:
+        retrieval_k = max(args.top_k)
 
     positive_ranks = []
     output_items = []
@@ -142,7 +146,7 @@ def main(args: Namespace):
 
     with tqdm() as pbar:
         for batch_tuples in batch_iter(dataset_iterator, batch_size=args.batch_size):
-            questions, answer_lists, positive_passage_id_lists = list(zip(*batch_tuples))
+            questions, answer_lists, positive_passage_id_lists, datasets = list(zip(*batch_tuples))
             with torch.no_grad():
                 encoder_inputs = dict(
                     encoder_tokenization.tokenize_questions(
@@ -165,9 +169,17 @@ def main(args: Namespace):
             else:
                 retrieved_passage_lists = retriever.retrieve_top_k_passages(encoded_questions, k=retrieval_k)
 
-            for question, answers, positive_passage_ids, retrieved_passages in zip(
-                questions, answer_lists, positive_passage_id_lists, retrieved_passage_lists
+            for question, answers, positive_passage_ids, dataset, retrieved_passages in zip(
+                questions, answer_lists, positive_passage_id_lists, datasets, retrieved_passage_lists
             ):
+                if args.restrict_to_same_dataset:
+                    if dataset is None:
+                        raise ValueError(
+                            "The option --restrict_to_same_dataset is set but the input item has no dataset value."
+                        )
+
+                    retrieved_passages = [passage for passage in retrieved_passages if passage.dataset == dataset]
+
                 positive_rank = None
                 output_ctxs = []
                 for rank, retrieved_passage in enumerate(retrieved_passages, start=1):
@@ -195,7 +207,7 @@ def main(args: Namespace):
 
             pbar.update(len(batch_tuples))
 
-    for k in sorted(top_ks):
+    for k in sorted(args.top_k):
         num_correct_at_k = sum(int(rank <= k) for rank in positive_ranks)
         recall_at_k = num_correct_at_k / len(positive_ranks)
         logger.info(f"Recall at {k}: {recall_at_k:.4f} ({num_correct_at_k}/{len(positive_ranks)})")
@@ -215,12 +227,14 @@ if __name__ == "__main__":
     parser.add_argument("--eval_mode", choices=("has_answer", "is_labeled_positive"), default="has_answer")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--max_question_length", type=int, default=256)
-    parser.add_argument("--top_k", type=str, default="1,5,20,50,100")
+    parser.add_argument("--top_k", type=int, nargs="+", default=[1, 5, 20, 50, 100])
     parser.add_argument("--binary", action="store_true")
     parser.add_argument("--binary_k", type=int, default=2048)
+    parser.add_argument("--retrieval_k", type=int)
+    parser.add_argument("--restrict_to_same_dataset", action="store_true")
     parser.add_argument("--answer_match_type", type=str, default="dpr_string")
     parser.add_argument("--include_title_in_passage", action="store_true")
-    parser.add_argument("--device_ids", type=str)
+    parser.add_argument("--device_ids", type=int, nargs="+")
     args = parser.parse_args()
 
     main(args)

@@ -19,7 +19,6 @@ def main(args: Namespace) -> None:
         args.passage_file,
         args.db_file,
         db_map_size=args.db_map_size,
-        skip_header=args.skip_header,
         chunk_size=args.chunk_size,
     )
     logger.info("Finished building LMDBPassageDB")
@@ -31,7 +30,6 @@ if __name__ == "__main__":
     parser.add_argument("--passage_file", type=str, required=True)
     parser.add_argument("--db_file", type=str, required=True)
     parser.add_argument("--db_map_size", type=int, default=2147483648)
-    parser.add_argument("--skip_header", action="store_true")
     parser.add_argument("--chunk_size", type=int, default=1024)
     args = parser.parse_args()
 

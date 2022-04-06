@@ -18,10 +18,10 @@ def main(args: Namespace):
     biencoder.passage_encoder.eval()
 
     if args.device_ids is not None:
-        device_ids = [int(i) for i in args.device_ids.split(",")]
-        biencoder.passage_encoder.to(device_ids[0])
+        device_ids = args.device_ids
+        question_encoder.to(device_ids[0])
         if len(device_ids) > 1:
-            biencoder.passage_encoder = DataParallel(biencoder.passage_encoder, device_ids=device_ids)
+            question_encoder = DataParallel(question_encoder, device_ids=device_ids)
     else:
         device_ids = []
 
