@@ -56,7 +56,13 @@ class BinaryRetriever:
             for score, passage_id in zip(scores, passage_ids):
                 passage = self.passage_db[int(passage_id)]
                 retrieved_passages.append(
-                    RetrievedPassage(id=passage.id, title=passage.title, text=passage.text, score=float(score))
+                    RetrievedPassage(
+                        id=passage.id,
+                        title=passage.title,
+                        text=passage.text,
+                        dataset=passage.dataset,
+                        score=float(score),
+                    )
                 )
 
             outputs.append(sorted(retrieved_passages, key=lambda p: p.score, reverse=True)[:k])

@@ -14,6 +14,7 @@ class Passage:
     id: int
     title: Optional[str] = None
     text: Optional[str] = None
+    dataset: Optional[str] = None
 
 
 @dataclass
@@ -199,12 +200,9 @@ def readitem_json(input_file: str, read_json_lines: Optional[bool] = None):
                 yield item
 
 
-def readitem_tsv(input_file: str, skip_header: bool = False):
+def readitem_tsv(input_file: str, fieldnames: Optional[List[str]] = None):
     with gzip.open(input_file, "rt") if input_file.endswith(".gz") else open(input_file) as f:
-        for i, row in enumerate(csv.reader(f, delimiter="\t")):
-            if i == 0 and skip_header:
-                continue
-
+        for row in csv.DictReader(f, fieldnames=fieldnames, delimiter="\t"):
             yield row
 
 

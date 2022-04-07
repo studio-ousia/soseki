@@ -24,15 +24,15 @@ class LMDBPassageDB:
             if dumped_passage is None:
                 raise KeyError("Invalid passage_id: " + str(passage_id))
 
-            title, text = json.loads(dumped_passage)
-            return Passage(passage_id, title, text)
+            title, text, dataset = json.loads(dumped_passage)
+            return Passage(passage_id, title, text, dataset=dataset)
 
     def __iter__(self) -> Iterator[Passage]:
         with self._db.begin() as txn:
             cursor = txn.cursor()
             for passage_id, dumped_passage in cursor:
-                title, text = json.loads(dumped_passage.decode("utf-8"))
-                yield Passage(int(passage_id.decode("utf-8")), title, text)
+                title, text, dataset = json.loads(dumped_passage.decode("utf-8"))
+                yield Passage(int(passage_id.decode("utf-8")), title, text, dataset=dataset)
 
     @classmethod
     def from_passage_file(
@@ -40,15 +40,14 @@ class LMDBPassageDB:
         passage_file: str,
         db_file: str,
         db_map_size: int = 2147483648,  # 2GB
-        skip_header: bool = True,
         chunk_size: int = 1024,
     ):
         db = lmdb.open(db_file, map_size=db_map_size, subdir=False)
         with db.begin(write=True) as txn:
             buffer = []
-            for row in tqdm(readitem_tsv(passage_file, skip_header=skip_header)):
-                passage_id, text, title = row[0], row[1], row[2]
-                dumped_passage = json.dumps([title, text])
+            for row in tqdm(readitem_tsv(passage_file)):
+                passage_id = row["id"]
+                dumped_passage = json.dumps([row["title"], row["text"], row.get("dataset", None)])
                 buffer.append((passage_id.encode("utf-8"), dumped_passage.encode("utf-8")))
 
                 if len(buffer) >= chunk_size:

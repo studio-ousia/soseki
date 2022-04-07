@@ -73,7 +73,7 @@ $ python build_passage_embeddings.py \
     --output_file <WORK_DIR>/passage_embeddings.idx \
     --max_passage_length 192 \
     --batch_size 2048 \
-    --device_ids 0,1,2,3
+    --device_ids 0 1 2 3
 ```
 
 **4. Evaluate the retriever and create datasets for reader**
@@ -89,12 +89,12 @@ $ python evaluate_retriever.py \
     --output_file <WORK_DIR>/reader_data/nq_train.jsonl \
     --batch_size 64 \
     --max_question_length 64 \
-    --top_k 1,2,5,10,20,50,100 \
+    --top_k 1 2 5 10 20 50 100 \
     --binary \
     --binary_k 2048 \
     --answer_match_type dpr_string \
     --include_title_in_passage \
-    --device_ids 0,1,2,3
+    --device_ids 0 1 2 3
 # The result should be logged as follows:
 # Recall at 1: 0.4867 (38529/79168)
 # Recall at 2: 0.6059 (47964/79168)
@@ -112,12 +112,12 @@ $ python evaluate_retriever.py \
     --output_file <WORK_DIR>/reader_data/nq_dev.jsonl \
     --batch_size 64 \
     --max_question_length 64 \
-    --top_k 1,2,5,10,20,50,100 \
+    --top_k 1 2 5 10 20 50 100 \
     --binary \
     --binary_k 2048 \
     --answer_match_type dpr_string \
     --include_title_in_passage \
-    --device_ids 0,1,2,3
+    --device_ids 0 1 2 3
 # The result should be logged as follows:
 # Recall at 1: 0.3984 (3489/8757)
 # Recall at 2: 0.5085 (4453/8757)
@@ -135,12 +135,12 @@ $ python evaluate_retriever.py \
     --output_file <WORK_DIR>/reader_data/nq_test.jsonl \
     --batch_size 64 \
     --max_question_length 64 \
-    --top_k 1,2,5,10,20,50,100 \
+    --top_k 1 2 5 10 20 50 100 \
     --binary \
     --binary_k 2048 \
     --answer_match_type dpr_string \
     --include_title_in_passage \
-    --device_ids 0,1,2,3
+    --device_ids 0 1 2 3
 # The result should be logged as follows:
 # Recall at 1: 0.4058 (1465/3610)
 # Recall at 2: 0.5191 (1874/3610)
