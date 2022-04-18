@@ -87,7 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str, required=True)
     parser.add_argument("--max_passage_length", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--device_ids", type=str)
+    parser.add_argument("--device_ids", type=int, nargs="+")
     args = parser.parse_args()
 
     main(args)
