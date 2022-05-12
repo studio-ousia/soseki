@@ -28,7 +28,7 @@ class DenseRetriever:
     def retrieve_top_k_passages(self, encoded_questions: np.ndarray, k: int = 10) -> List[List[RetrievedPassage]]:
         num_questions, _ = encoded_questions.shape
 
-        scores_array, passage_ids_array = self.index.search(encoded_questions, k)
+        scores_array, passage_ids_array = self.faiss_index.search(encoded_questions, k)
         assert scores_array.shape == (num_questions, k)
         assert passage_ids_array.shape == (num_questions, k)
 
