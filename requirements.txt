@@ -7,6 +7,6 @@ pytorch-lightning==1.6.4
 regex==2022.6.2
 sentencepiece==0.1.96
 streamlit==1.10.0
-torch==1.11.0
+#torch==1.11.0  # You may want to install torch outside this file for the CUDA compatibility.
 tqdm==4.64.0
 transformers[ja]==4.19.2
