@@ -83,11 +83,11 @@ def convert_reader_to_onnx(reader_ckpt_file: str, output_dir: str, verbose: bool
         dynamic_axes["start_logits"] = {0: "batch", 1: "sequence"}
         dynamic_axes["end_logits"] = {0: "batch", 1: "sequence"}
 
-        output_file = os.path.join(output_dir, "reader.onnx")
+        reader_output_file = os.path.join(output_dir, "reader.onnx")
         torch.onnx.export(
             model=reader_module,
             args=(sample_inputs, {}),
-            f=output_file,
+            f=reader_output_file,
             input_names=input_names,
             output_names=output_names,
             opset_version=12,

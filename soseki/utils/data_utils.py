@@ -2,11 +2,7 @@ import csv
 import gzip
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
-
-import torch
-import torch.distributed as dist
-from torch.utils.data import Dataset, Sampler
+from typing import Any, Iterable, List, Optional, Tuple
 
 
 @dataclass
@@ -35,129 +31,6 @@ class RetrieverDatasetExample:
     metadata: Optional[Any]
 
 
-class MultipleKeyDataset(Dataset):
-    dataset_dict: Dict[str, Dataset]
-    dataset_keys: List[str]
-    dataset_sizes: Dict[str, int]
-    total_dataset_size: int
-
-    def __init__(self, dataset_dict: Dict[str, Dataset]) -> None:
-        super(MultipleKeyDataset, self).__init__()
-        self.dataset_dict = dataset_dict
-        self.dataset_keys = list(dataset_dict.keys())
-        self.dataset_sizes = {key: len(dataset) for key, dataset in dataset_dict.items()}
-        self.total_dataset_size = sum(self.dataset_sizes.values())
-
-    def __len__(self) -> int:
-        return self.total_dataset_size
-
-    def __getitem__(self, key_idx_tuple: Tuple[str, int]) -> Any:
-        dataset_key, sample_idx = key_idx_tuple
-        return self.dataset_dict[dataset_key][sample_idx]
-
-
-class MultipleKeyDatasetBatchSampler(Sampler[List[int]]):
-    def __init__(
-        self,
-        multiple_key_dataset: MultipleKeyDataset,
-        weights: Optional[Dict[str, float]] = None,
-        batch_size: int = 1,
-        shuffle: bool = True,
-        seed: int = 0,
-        distributed: bool = False,
-        num_replicas: Optional[int] = None,
-        rank: Optional[int] = None,
-    ) -> None:
-        if distributed:
-            if num_replicas is None:
-                if not dist.is_available():
-                    raise RuntimeError("Requires distributed package to be available")
-
-                num_replicas = dist.get_world_size()
-
-            if rank is None:
-                if not dist.is_available():
-                    raise RuntimeError("Requires distributed package to be available")
-
-                rank = dist.get_rank()
-
-            if rank >= num_replicas or rank < 0:
-                raise ValueError(
-                    "Invalid rank {}, rank should be in the interval [0, {}]".format(rank, num_replicas - 1)
-                )
-        else:
-            num_replicas = 1
-            rank = 0
-
-        if weights is None:
-            weights = dict()
-
-        for key in multiple_key_dataset.dataset_dict.keys():
-            weights.setdefault(key, 1.0)
-
-        self.multiple_key_dataset = multiple_key_dataset
-        self.weights = weights
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.seed = seed
-        self.distributed = distributed
-        self.num_replicas = num_replicas
-        self.rank = rank
-
-        self.chunk_size = self.batch_size * self.num_replicas
-        self.num_chunks = sum(
-            int(len(dataset) * self.weights[key]) // self.chunk_size
-            for key, dataset in self.multiple_key_dataset.dataset_dict.items()
-        )
-        self.total_size = self.num_chunks * self.chunk_size
-        self.epoch = 0
-
-    def __iter__(self) -> Iterator[List[Tuple[str, int]]]:
-        if self.shuffle:
-            generator = torch.Generator()
-            generator.manual_seed(self.seed + self.epoch)
-        else:
-            generator = None
-
-        chunks: List[List[int]] = []
-        for key in self.multiple_key_dataset.dataset_keys:
-            weight = self.weights[key]
-            dataset_size = self.multiple_key_dataset.dataset_sizes[key]
-
-            sample_idxs = []
-            for _ in range(int(weight) + 1):
-                if self.shuffle:
-                    sample_idxs.extend(torch.randperm(dataset_size, generator=generator).tolist())
-                else:
-                    sample_idxs.extend(list(range(dataset_size)))
-
-            sample_idxs = sample_idxs[: int(dataset_size * weight)]
-
-            for i in range(0, len(sample_idxs), self.chunk_size):
-                chunk = [(key, idx) for idx in sample_idxs[i : i + self.chunk_size]]
-                if len(chunk) < self.chunk_size:
-                    break
-
-                chunks.append(chunk)
-
-        if self.shuffle:
-            chunk_idxs = torch.randperm(len(chunks), generator=generator).tolist()
-        else:
-            chunk_idxs = list(range(len(chunks)))
-
-        for chunk_idx in chunk_idxs:
-            chunk = chunks[chunk_idx]
-            batch = chunk[self.rank : self.chunk_size : self.num_replicas]
-            assert len(batch) == self.batch_size
-            yield batch
-
-    def __len__(self) -> int:
-        return self.num_chunks
-
-    def set_epoch(self, epoch: int) -> None:
-        self.epoch = epoch
-
-
 @dataclass
 class ReaderDatasetExample:
     index: int
@@ -178,10 +51,11 @@ class AnswerSpan:
 
 @dataclass
 class AnswerCandidate:
+    input_text: str
     answer_text: str
-    passage_text: str
+    answer_text_span: Tuple[int, int]
     score: float
-    passage_score: float
+    classifier_score: float
     span_score: float
 
 

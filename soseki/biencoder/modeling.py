@@ -2,7 +2,7 @@ import math
 import random
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -10,49 +10,164 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.optim import AdamW, Optimizer
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader, DistributedSampler, Sampler
 from tqdm import tqdm
 from pytorch_lightning.core import LightningModule
-from pytorch_lightning.utilities.distributed import distributed_available, rank_zero_info
+from pytorch_lightning.utilities.distributed import distributed_available
+from pytorch_lightning.utilities.rank_zero import rank_zero_info
 from transformers import AutoModel
 from transformers.optimization import get_linear_schedule_with_warmup
 
 from .tokenization import EncoderTokenization
 from ..passage_db.lmdb_passage_db import LMDBPassageDB
-from ..utils.data_utils import (
-    MultipleKeyDataset,
-    MultipleKeyDatasetBatchSampler,
-    Passage,
-    RetrieverDatasetExample,
-    readitem_json,
-)
+from ..utils.data_utils import Passage, RetrieverDatasetExample, readitem_json
+
+
+class MultipleKeyDataset(Dataset):
+    dataset_dict: Dict[str, Dataset]
+    dataset_keys: List[str]
+    dataset_sizes: Dict[str, int]
+    total_dataset_size: int
+
+    def __init__(self, dataset_dict: Dict[str, Dataset]) -> None:
+        super(MultipleKeyDataset, self).__init__()
+        self.dataset_dict = dataset_dict
+        self.dataset_keys = list(dataset_dict.keys())
+        self.dataset_sizes = {key: len(dataset) for key, dataset in dataset_dict.items()}
+        self.total_dataset_size = sum(self.dataset_sizes.values())
+
+    def __len__(self) -> int:
+        return self.total_dataset_size
+
+    def __getitem__(self, key_idx_tuple: Tuple[str, int]) -> Any:
+        dataset_key, sample_idx = key_idx_tuple
+        return self.dataset_dict[dataset_key][sample_idx]
+
+
+class MultipleKeyDatasetBatchSampler(Sampler[List[int]]):
+    def __init__(
+        self,
+        multiple_key_dataset: MultipleKeyDataset,
+        weights: Optional[Dict[str, float]] = None,
+        batch_size: int = 1,
+        shuffle: bool = True,
+        seed: int = 0,
+        distributed: bool = False,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
+    ) -> None:
+        if distributed:
+            if num_replicas is None:
+                if not dist.is_available():
+                    raise RuntimeError("Requires distributed package to be available")
+
+                num_replicas = dist.get_world_size()
+
+            if rank is None:
+                if not dist.is_available():
+                    raise RuntimeError("Requires distributed package to be available")
+
+                rank = dist.get_rank()
+
+            if rank >= num_replicas or rank < 0:
+                raise ValueError(
+                    "Invalid rank {}, rank should be in the interval [0, {}]".format(rank, num_replicas - 1)
+                )
+        else:
+            num_replicas = 1
+            rank = 0
+
+        if weights is None:
+            weights = dict()
+
+        for key in multiple_key_dataset.dataset_dict.keys():
+            weights.setdefault(key, 1.0)
+
+        self.multiple_key_dataset = multiple_key_dataset
+        self.weights = weights
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.seed = seed
+        self.distributed = distributed
+        self.num_replicas = num_replicas
+        self.rank = rank
+
+        self.chunk_size = self.batch_size * self.num_replicas
+        self.num_chunks = sum(
+            int(len(dataset) * self.weights[key]) // self.chunk_size
+            for key, dataset in self.multiple_key_dataset.dataset_dict.items()
+        )
+        self.total_size = self.num_chunks * self.chunk_size
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[List[Tuple[str, int]]]:
+        if self.shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+        else:
+            generator = None
+
+        chunks: List[List[int]] = []
+        for key in self.multiple_key_dataset.dataset_keys:
+            weight = self.weights[key]
+            dataset_size = self.multiple_key_dataset.dataset_sizes[key]
+
+            sample_idxs = []
+            for _ in range(int(weight) + 1):
+                if self.shuffle:
+                    sample_idxs.extend(torch.randperm(dataset_size, generator=generator).tolist())
+                else:
+                    sample_idxs.extend(list(range(dataset_size)))
+
+            sample_idxs = sample_idxs[: int(dataset_size * weight)]
+
+            for i in range(0, len(sample_idxs), self.chunk_size):
+                chunk = [(key, idx) for idx in sample_idxs[i : i + self.chunk_size]]
+                if len(chunk) < self.chunk_size:
+                    break
+
+                chunks.append(chunk)
+
+        if self.shuffle:
+            chunk_idxs = torch.randperm(len(chunks), generator=generator).tolist()
+        else:
+            chunk_idxs = list(range(len(chunks)))
+
+        for chunk_idx in chunk_idxs:
+            chunk = chunks[chunk_idx]
+            batch = chunk[self.rank : self.chunk_size : self.num_replicas]
+            assert len(batch) == self.batch_size
+            yield batch
+
+    def __len__(self) -> int:
+        return self.num_chunks
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
 
 class EncoderModel(nn.Module):
-    def __init__(
-        self,
-        base_model_name: str,
-        pooling_index: int = 0,
-        projection_dim: Optional[int] = None,
-    ) -> None:
+    def __init__(self, base_model_name: str, pooling_index: int = 0, projection_dim: Optional[int] = None) -> None:
         super().__init__()
         self.encoder = AutoModel.from_pretrained(base_model_name, add_pooling_layer=False, return_dict=False)
-        # For LUKE / mLUKE models which take large amounts of memory for entity embeddings
-        if hasattr(self.encoder, "entity_embeddings"):
-            del self.encoder.entity_embeddings
-
         self.pooling_index = pooling_index
 
         if projection_dim is not None:
             self.projection_dense = nn.Linear(self.encoder.config.hidden_size, projection_dim)
             self.projection_layer_norm = torch.nn.LayerNorm(projection_dim, eps=self.encoder.config.layer_norm_eps)
+            self.output_dim = projection_dim
+        else:
+            self.output_dim = self.encoder.config.hidden_size
 
-    def forward(self, input_tensors: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def forward(self, input_tensors: Dict[str, Tensor]) -> Tensor:
         encoder_output = self.encoder(**input_tensors)
-        pooled_output = encoder_output[0][:, self.pooling_index, :].contiguous()
+        sequence_output = encoder_output[0]
+
+        pooled_output = sequence_output[:, self.pooling_index, :].contiguous()
 
         if hasattr(self, "projection_dense"):
             pooled_output = self.projection_dense(pooled_output)
+        if hasattr(self, "projection_layer_norm"):
             pooled_output = self.projection_layer_norm(pooled_output)
 
         return pooled_output
@@ -61,14 +176,17 @@ class EncoderModel(nn.Module):
 class BiencoderLightningModule(LightningModule):
     def __init__(self, hparams: Optional[Namespace] = None, **kwargs) -> None:
         super().__init__()
+        # Set arguments to `hparams` attribute.
         self.save_hyperparameters(hparams)
 
+        # Initialize the question encoder.
         self.question_encoder = EncoderModel(
             self.hparams.base_pretrained_model,
             pooling_index=self.hparams.encoder_pooling_index,
             projection_dim=self.hparams.encoder_projection_dim,
         )
 
+        # Initialize the passage encoder.
         if self.hparams.share_encoders:
             self.passage_encoder = self.question_encoder
         else:
@@ -78,28 +196,36 @@ class BiencoderLightningModule(LightningModule):
                 projection_dim=self.hparams.encoder_projection_dim,
             )
 
+        # Initialize the tokenizer.
         self.tokenization = EncoderTokenization(self.hparams.base_pretrained_model)
+
+        # Set attributes used for checking tensor shapes.
+        self.num_passages = 1 + self.hparams.num_negative_passages
+        self.max_question_length = self.hparams.max_question_length
+        self.max_passage_length = self.hparams.max_passage_length
+        self.embed_size = self.question_encoder.output_dim
 
     @staticmethod
     def add_model_specific_args(parent_parser: ArgumentParser) -> ArgumentParser:
         parser = parent_parser.add_argument_group("Biencoder")
 
         parser.add_argument("--train_file", type=str, required=True)
-        parser.add_argument("--dev_file", type=str, required=True)
+        parser.add_argument("--val_file", type=str, required=True)
         parser.add_argument("--passage_db_file", type=str)
 
+        parser.add_argument("--train_use_multiple_key_dataset", action="store_true")
         parser.add_argument("--train_dataset_keys", nargs="*", type=str)
         parser.add_argument("--train_dataset_weights", nargs="*", type=float)
-        parser.add_argument("--dev_dataset_keys", nargs="*", type=str)
-        parser.add_argument("--dev_dataset_weights", nargs="*", type=float)
-        parser.add_argument("--use_multiple_key_dataset", action="store_true")
+        parser.add_argument("--val_use_multiple_key_dataset", action="store_true")
+        parser.add_argument("--val_dataset_keys", nargs="*", type=str)
+        parser.add_argument("--val_dataset_weights", nargs="*", type=float)
 
         parser.add_argument("--train_max_load_positive_passages", type=int)
         parser.add_argument("--train_max_load_hard_negative_passages", type=int)
         parser.add_argument("--train_max_load_normal_negative_passages", type=int)
-        parser.add_argument("--dev_max_load_positive_passages", type=int)
-        parser.add_argument("--dev_max_load_hard_negative_passages", type=int)
-        parser.add_argument("--dev_max_load_normal_negative_passages", type=int)
+        parser.add_argument("--eval_max_load_positive_passages", type=int)
+        parser.add_argument("--eval_max_load_hard_negative_passages", type=int)
+        parser.add_argument("--eval_max_load_normal_negative_passages", type=int)
 
         parser.add_argument("--max_question_length", type=int, default=256)
         parser.add_argument("--max_passage_length", type=int, default=256)
@@ -119,10 +245,10 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--binary", action="store_true")
         parser.add_argument("--use_ste", action="store_true")
         parser.add_argument("--hashnet_gamma", type=float, default=0.1)
-        parser.add_argument("--use_binary_cross_entropy_loss", action="store_true")
-        parser.add_argument("--binary_ranking_loss_margin", type=float, default=0.1)
-        parser.add_argument("--no_dense_loss", action="store_true")
-        parser.add_argument("--no_binary_loss", action="store_true")
+        parser.add_argument("--cand_loss_use_cross_entropy", action="store_true")
+        parser.add_argument("--cand_loss_margin", type=float, default=0.1)
+        parser.add_argument("--no_cand_loss", action="store_true")
+        parser.add_argument("--no_rerank_loss", action="store_true")
 
         parser.add_argument("--train_batch_size", type=int, default=16)
         parser.add_argument("--eval_batch_size", type=int, default=16)
@@ -134,59 +260,54 @@ class BiencoderLightningModule(LightningModule):
         return parent_parser
 
     def setup(self, stage: str) -> None:
+        # Load the training dataset.
         if stage == "fit":
-            rank_zero_info("Loading training data")
+            rank_zero_info("Loading the training dataset")
             self._train_dataset = self._load_dataset(
-                self.hparams.train_file,
+                dataset_file=self.hparams.train_file,
+                use_multiple_key_dataset=self.hparams.train_use_multiple_key_dataset,
                 dataset_keys=self.hparams.train_dataset_keys,
-                use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
-                max_load_positive_passages=self.hparams.train_max_load_positive_passages,
-                max_load_hard_negative_passages=self.hparams.train_max_load_hard_negative_passages,
-                max_load_normal_negative_passages=self.hparams.train_max_load_normal_negative_passages,
+                training=True,
             )
             rank_zero_info(f"The number of examples in training data: {len(self._train_dataset)}")
 
+        # Load the validation dataset.
         if stage in ("fit", "validate"):
-            rank_zero_info("Loading development data")
-            self._dev_dataset = self._load_dataset(
-                self.hparams.dev_file,
-                dataset_keys=self.hparams.dev_dataset_keys,
-                use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
-                max_load_positive_passages=self.hparams.dev_max_load_positive_passages,
-                max_load_hard_negative_passages=self.hparams.dev_max_load_hard_negative_passages,
-                max_load_normal_negative_passages=self.hparams.dev_max_load_normal_negative_passages,
+            rank_zero_info("Loading the validation dataset")
+            self._val_dataset = self._load_dataset(
+                dataset_file=self.hparams.val_file,
+                use_multiple_key_dataset=self.hparams.val_use_multiple_key_dataset,
+                dataset_keys=self.hparams.val_dataset_keys,
+                training=False,
             )
-            rank_zero_info(f"The number of examples in development data: {len(self._dev_dataset)}")
+            rank_zero_info(f"The number of examples in validation data: {len(self._val_dataset)}")
 
     def _load_dataset(
         self,
         dataset_file: str,
-        dataset_keys: Optional[List[str]] = None,
-        use_multiple_key_dataset: bool = False,
-        max_load_positive_passages: Optional[int] = None,
-        max_load_hard_negative_passages: Optional[int] = None,
-        max_load_normal_negative_passages: Optional[int] = None,
+        use_multiple_key_dataset: bool,
+        dataset_keys: List[str],
+        training: bool,
     ) -> Dataset:
+        # Initialize a dataset iterator for reading a JSON (JSON Lines) file.
         dataset_iterator = readitem_json(dataset_file)
         if self.global_rank == 0:
             dataset_iterator = tqdm(dataset_iterator)
 
         if use_multiple_key_dataset:
-            dataset_dict: Dict[str, List[RetrieverDatasetExample]] = defaultdict(list)
+            dataset_dict = defaultdict(list)
         else:
-            dataset: List[RetrieverDatasetExample] = []
+            dataset = []
 
+        # Load the dataset.
         index = 0
         for item in dataset_iterator:
-            example = self._create_dataset_example(
-                index,
-                item,
-                max_load_positive_passages=max_load_positive_passages,
-                max_load_hard_negative_passages=max_load_hard_negative_passages,
-                max_load_normal_negative_passages=max_load_normal_negative_passages,
-            )
+            example = self._create_dataset_example(index, item, training=training)
+
+            # Skip items with no postive passages.
             if len(example.positive_passages) == 0:
                 continue
+            # Skip items with no negative passages.
             if len(example.hard_negative_passages) + len(example.normal_negative_passages) == 0:
                 continue
 
@@ -205,18 +326,22 @@ class BiencoderLightningModule(LightningModule):
 
         return dataset
 
-    def _create_dataset_example(
-        self,
-        index: int,
-        item: Dict[str, Any],
-        max_load_positive_passages: Optional[int] = None,
-        max_load_hard_negative_passages: Optional[int] = None,
-        max_load_normal_negative_passages: Optional[int] = None,
-    ) -> RetrieverDatasetExample:
-        dataset_name = item.pop("dataset", "")
+    def _create_dataset_example(self, index: int, item: Dict[str, Any], training: bool) -> RetrieverDatasetExample:
+        if training:
+            max_load_positive_passages = self.hparams.train_max_load_positive_passages
+            max_load_hard_negative_passages = self.hparams.train_max_load_hard_negative_passages
+            max_load_normal_negative_passages = self.hparams.train_max_load_normal_negative_passages
+        else:
+            max_load_positive_passages = self.hparams.eval_max_load_positive_passages
+            max_load_hard_negative_passages = self.hparams.eval_max_load_hard_negative_passages
+            max_load_normal_negative_passages = self.hparams.eval_max_load_normal_negative_passages
+
+        # Pop the question and answers.
         question = item.pop("question")
         answers = item.pop("answers")
+        dataset_name = item.pop("dataset", "")  # e.g., "nq_train_psgs_w100" in the DPR's nq-train.json file
 
+        # Create `Passage` objects from the positive/negative passages.
         positive_passages = [
             Passage(id=ctx.get("passage_id"), title=ctx["title"], text=ctx["text"]) for ctx in item.pop("positive_ctxs")
         ]
@@ -236,8 +361,10 @@ class BiencoderLightningModule(LightningModule):
         if max_load_normal_negative_passages is not None:
             normal_negative_passages = normal_negative_passages[:max_load_normal_negative_passages]
 
+        # Metadata is the original JSON object with the popped items removed.
         metadata = item
 
+        # Create a `RetrieverDatasetExample` object.
         example = RetrieverDatasetExample(
             index=index,
             dataset=dataset_name,
@@ -253,32 +380,40 @@ class BiencoderLightningModule(LightningModule):
     def train_dataloader(self) -> DataLoader:
         return self._get_dataloader(
             dataset=self._train_dataset,
-            training=True,
-            batch_size=self.hparams.train_batch_size,
-            use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
+            use_multiple_key_dataset=self.hparams.train_use_multiple_key_dataset,
             dataset_keys=self.hparams.train_dataset_keys,
             dataset_weights=self.hparams.train_dataset_weights,
+            training=True,
         )
 
     def val_dataloader(self) -> DataLoader:
         return self._get_dataloader(
-            dataset=self._dev_dataset,
+            dataset=self._val_dataset,
+            use_multiple_key_dataset=self.hparams.val_use_multiple_key_dataset,
+            dataset_keys=self.hparams.val_dataset_keys,
+            dataset_weights=self.hparams.val_dataset_weights,
             training=False,
-            batch_size=self.hparams.eval_batch_size,
-            use_multiple_key_dataset=self.hparams.use_multiple_key_dataset,
-            dataset_keys=self.hparams.dev_dataset_keys,
-            dataset_weights=self.hparams.dev_dataset_weights,
         )
 
     def _get_dataloader(
         self,
         dataset: Dataset,
+        use_multiple_key_dataset: bool,
+        dataset_keys: List[str],
+        dataset_weights: List[float],
         training: bool,
-        batch_size: int,
-        use_multiple_key_dataset: bool = False,
-        dataset_keys: Optional[List[str]] = None,
-        dataset_weights: Optional[List[float]] = None,
     ) -> DataLoader:
+        if training:
+            batch_size = self.hparams.train_batch_size
+            shuffle = True
+        else:
+            batch_size = self.hparams.eval_batch_size
+            shuffle = False
+
+        # Get a batch collation function.
+        collate_fn = self._get_collate_fn(training)
+
+        # Initialize a `DataLoader` and return it.
         if use_multiple_key_dataset:
             if dataset_keys is not None and dataset_weights is not None:
                 weights = {key: weight for key, weight in zip(dataset_keys, dataset_weights)}
@@ -289,14 +424,14 @@ class BiencoderLightningModule(LightningModule):
                 dataset,
                 weights=weights,
                 batch_size=batch_size,
-                shuffle=training,
+                shuffle=shuffle,
                 distributed=distributed_available(),
             )
             return DataLoader(
                 dataset,
                 batch_sampler=batch_sampler,
                 num_workers=self.hparams.num_dataloader_workers,
-                collate_fn=self._get_collate_fn(training),
+                collate_fn=collate_fn,
                 pin_memory=True,
             )
         else:
@@ -304,37 +439,54 @@ class BiencoderLightningModule(LightningModule):
                 return DataLoader(
                     dataset,
                     batch_size=batch_size,
-                    sampler=DistributedSampler(dataset, shuffle=training),
+                    sampler=DistributedSampler(dataset, shuffle=shuffle),
                     num_workers=self.hparams.num_dataloader_workers,
-                    collate_fn=self._get_collate_fn(training),
+                    collate_fn=collate_fn,
                     pin_memory=True,
                 )
             else:
                 return DataLoader(
                     dataset,
                     batch_size=batch_size,
-                    shuffle=training,
+                    shuffle=shuffle,
                     num_workers=self.hparams.num_dataloader_workers,
-                    collate_fn=self._get_collate_fn(training),
+                    collate_fn=collate_fn,
                     pin_memory=True,
                 )
 
     def _get_collate_fn(self, training: bool) -> Callable:
-        def collate_fn(
-            batch_examples: List[RetrieverDatasetExample],
-        ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor]:
-            # passage db is used when the loaded dataset does not have the passage text fields
+        def collate_fn(batch_examples: List[RetrieverDatasetExample]) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+            # The passage DB is used when the loaded dataset does not have the passage text fields.
             if self.hparams.passage_db_file is not None:
                 passage_db = LMDBPassageDB(self.hparams.passage_db_file)
             else:
                 passage_db = None
 
+            def _get_passage_title(passage: Passage) -> str:
+                if passage.title is not None:
+                    return passage.title
+                elif passage_db is not None:
+                    # Fetch the passage title from the passage DB.
+                    return passage_db[passage.id].title
+                else:
+                    raise KeyError("--passage_db_file must be specified if the dataset has no passage title fields")
+
+            def _get_passage_text(passage: Passage) -> str:
+                if passage.text is not None:
+                    return passage.text
+                elif passage_db is not None:
+                    # Fetch the passage text from the passage DB.
+                    return passage_db[passage.id].text
+                else:
+                    raise KeyError("--passage_db_file must be specified if the dataset has no passage text fields")
+
+            num_questions = len(batch_examples)
+
             tokenized_questions = []
             tokenized_passages = []
-            passage_labels = []
 
             for example in batch_examples:
-                # tokenize the question
+                # Tokenize the question.
                 tokenized_question = self.tokenization.tokenize_questions(
                     example.question,
                     padding="max_length",
@@ -343,13 +495,13 @@ class BiencoderLightningModule(LightningModule):
                 )
                 tokenized_questions.append(tokenized_question)
 
-                # select positive passage
+                # Select a positive passage.
                 if training and self.hparams.shuffle_positive_passages:
                     positive_passage = random.choice(example.positive_passages)
                 else:
                     positive_passage = example.positive_passages[0]
 
-                # select hard negative passages
+                # Select hard negative passages.
                 hard_negative_passages = example.hard_negative_passages
                 if training and self.hparams.shuffle_hard_negative_passages:
                     random.shuffle(hard_negative_passages)
@@ -357,7 +509,7 @@ class BiencoderLightningModule(LightningModule):
                 if self.hparams.max_hard_negative_passages is not None:
                     hard_negative_passages = hard_negative_passages[: self.hparams.max_hard_negative_passages]
 
-                # select normal negative passages
+                # Select normal negative passages.
                 normal_negative_passages = example.normal_negative_passages
                 if training and self.hparams.shuffle_normal_negative_passages:
                     random.shuffle(normal_negative_passages)
@@ -365,65 +517,39 @@ class BiencoderLightningModule(LightningModule):
                 if self.hparams.max_normal_negative_passages is not None:
                     normal_negative_passages = normal_negative_passages[: self.hparams.max_normal_negative_passages]
 
-                # concatenate negative passages; hard negative passages are prioritized
+                # Concatenate the negative passages; hard negative passages are prioritized.
                 negative_passages = hard_negative_passages + normal_negative_passages
                 negative_passages = negative_passages[: self.hparams.num_negative_passages]
                 if len(negative_passages) < self.hparams.num_negative_passages:
-                    raise ValueError("--num_negative_passages is larger than retrieved negative passages.")
+                    raise ValueError("--num_negative_passages is larger than retrieved negative passages")
 
-                # tokenize the passages
-                for i, passage in enumerate([positive_passage] + negative_passages):
-                    passage_title = passage.title
-                    passage_text = passage.text
-
-                    if passage_title is None:
-                        if passage_db is not None:
-                            # fetch passage title from passage db
-                            passage_title = passage_db[passage.id].title
-                        else:
-                            raise KeyError("--passage_db_file must be specified if the dataset have no passage titles")
-
-                    if passage_text is None:
-                        if passage_db is not None:
-                            # fetch passage text from passage db
-                            passage_text = passage_db[passage.id].text
-                        else:
-                            raise KeyError("--passage_db_file must be specified if the dataset have no passage texts")
-
+                # Tokenize the passages.
+                for passage in [positive_passage] + negative_passages:
                     tokenized_passage = self.tokenization.tokenize_passages(
-                        passage_title,
-                        passage_text,
+                        _get_passage_title(passage),
+                        _get_passage_text(passage),
                         padding="max_length",
                         truncation="only_second",
                         max_length=self.hparams.max_passage_length,
                     )
                     tokenized_passages.append(tokenized_passage)
 
-                    passage_labels.append(int(i == 0))  # positive passage is always indexed 0
-
-            # tensorize the lists of integers
+            # Tensorize the lists of integers.
             tokenized_questions = {
                 key: torch.tensor([q[key] for q in tokenized_questions]) for key in tokenized_questions[0].keys()
             }
             tokenized_passages = {
                 key: torch.tensor([p[key] for p in tokenized_passages]) for key in tokenized_passages[0].keys()
             }
-            passage_labels = torch.tensor(passage_labels)
 
-            # check dimensionality of the tensors
-            Q = len(batch_examples)  # the number of questions in the batch
-            P = 1 + self.hparams.num_negative_passages  # the number of passages per question
-            Lq = self.hparams.max_question_length  # the sequence length of questions
-            Lp = self.hparams.max_passage_length  # the sequence length of passages
+            # Check the shapes of the tensors.
             for tensor in tokenized_questions.values():
-                assert tensor.size() == (Q, Lq)
+                assert tensor.size() == (num_questions, self.max_question_length)
 
             for tensor in tokenized_passages.values():
-                assert tensor.size() == (Q * P, Lp)
+                assert tensor.size() == (num_questions * self.num_passages, self.max_passage_length)
 
-            assert passage_labels.size() == (Q * P,)
-
-            return (tokenized_questions, tokenized_passages, passage_labels)
+            return tokenized_questions, tokenized_passages
 
         return collate_fn
 
@@ -432,61 +558,114 @@ class BiencoderLightningModule(LightningModule):
         tokenized_questions: Dict[str, Tensor],
         tokenized_passages: Dict[str, Tensor],
     ) -> Tuple[Tensor, Tensor]:
+        question_batch_size = tokenized_questions["input_ids"].size(0)
+        passage_batch_size = tokenized_passages["input_ids"].size(0)
+
+        # Encode the questions and passages into tensors.
         encoded_question = self.question_encoder(tokenized_questions)
         encoded_passage = self.passage_encoder(tokenized_passages)
+
+        # Check the shapes of the output tensors.
+        assert encoded_question.size() == (question_batch_size, self.embed_size)
+        assert encoded_passage.size() == (passage_batch_size, self.embed_size)
 
         return encoded_question, encoded_passage
 
     def training_step(
         self,
-        batch: Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor],
+        batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]],
         batch_idx: int,
     ) -> Tuple[Tensor, Tensor]:
-        tokenized_questions, tokenized_passages, passage_labels = batch
+        # Unpack the tuple of the batch tensors.
+        tokenized_questions, tokenized_passages = batch
+
+        num_questions = tokenized_questions["input_ids"].size(0)
+
+        # Encode the questions and passages into tensors.
         encoded_question, encoded_passage = self.forward(tokenized_questions, tokenized_passages)
+
+        # Check the shapes of the output tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
 
         return encoded_question, encoded_passage
 
-    def training_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor]) -> Dict[str, Tensor]:
+    def training_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor]) -> Tensor:
+        # Unpack the tuple of the batch tensors.
         encoded_question, encoded_passage = batch_parts_outputs
 
+        # Gather tensors distributed to multiple devices.
         if distributed_available():
-            encoded_question = self._gather_distributed_tensors(encoded_question)
-            encoded_passage = self._gather_distributed_tensors(encoded_passage)
+            encoded_question = self.all_gather(encoded_question, sync_grads=True)
+            encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
+            encoded_passage = self.all_gather(encoded_passage, sync_grads=True)
+            encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
 
-        output = self._compute_loss(encoded_question, encoded_passage)
-        for key, value in output.items():
-            self.log(key, value)
+        num_questions = encoded_question.size(0)
 
-        return output
+        # Check the shapes of the gathered tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Compute the losses.
+        loss, cand_loss, rerank_loss = self._compute_loss(encoded_question, encoded_passage)
+
+        self.log("loss", loss.detach())
+        if cand_loss is not None:
+            self.log("cand_loss", cand_loss.detach())
+        if rerank_loss is not None:
+            self.log("rerank_loss", rerank_loss.detach())
+
+        return loss
 
     def validation_step(
-        self,
-        batch: Tuple[Dict[str, Tensor], Dict[str, Tensor], Tensor],
-        batch_idx: int,
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        tokenized_questions, tokenized_passages, passage_labels = batch
+        self, batch: Tuple[Dict[str, Tensor], Dict[str, Tensor]], batch_idx: int
+    ) -> Tuple[Tensor, Tensor]:
+        # Unpack the tuple of the batch tensors.
+        tokenized_questions, tokenized_passages = batch
+
+        num_questions = tokenized_questions["input_ids"].size(0)
+
+        # Encode the questions and passages into tensors.
         encoded_question, encoded_passage = self.forward(tokenized_questions, tokenized_passages)
 
-        return encoded_question, encoded_passage, passage_labels
+        # Check the shapes of the output tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
 
-    def validation_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor, Tensor]) -> Dict[str, Tensor]:
-        encoded_question, encoded_passage, passage_labels = batch_parts_outputs
+        return encoded_question, encoded_passage
 
+    def validation_step_end(self, batch_parts_outputs: Tuple[Tensor, Tensor]) -> Dict[str, Tensor]:
+        # Unpack the tuple of the batch tensors.
+        encoded_question, encoded_passage = batch_parts_outputs
+
+        # Gather tensors distributed to multiple devices.
         if distributed_available():
-            encoded_question = self._gather_distributed_tensors(encoded_question)
-            encoded_passage = self._gather_distributed_tensors(encoded_passage)
-            passage_labels = self._gather_distributed_tensors(passage_labels)
+            encoded_question = self.all_gather(encoded_question)
+            encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
+            encoded_passage = self.all_gather(encoded_passage)
+            encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
 
-        output = self._compute_loss(encoded_question, encoded_passage)
-        output["ranks"] = self._compute_ranks(encoded_question, encoded_passage, passage_labels)
+        num_questions = encoded_question.size(0)
+
+        # Check the shapes of the gathered tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Compute the loss and ranks of predicted passages.
+        loss, _, _ = self._compute_loss(encoded_question, encoded_passage)
+        ranks = self._compute_ranks(encoded_question, encoded_passage)
+
+        output = {"loss": loss, "ranks": ranks}
 
         return output
 
     def validation_epoch_end(self, outputs: List[Dict[str, Tensor]]) -> None:
+        # Compute the avarage of the loss.
         ave_loss = torch.stack([output["loss"] for output in outputs]).mean()
         self.log("val_loss", ave_loss)
 
+        # Compute the avarage of the ranks of predicted passages.
         if self.current_epoch >= self.hparams.eval_rank_start_epoch:
             avg_rank = torch.cat([output["ranks"] for output in outputs], dim=0).mean()
         else:
@@ -494,88 +673,172 @@ class BiencoderLightningModule(LightningModule):
 
         self.log("val_avg_rank", avg_rank)
 
-    def _gather_distributed_tensors(self, input_tensor: Tensor) -> Tensor:
-        tensor_list = [torch.empty_like(input_tensor) for _ in range(dist.get_world_size())]
-        dist.all_gather(tensor_list, input_tensor)
-        # overwrite a portion of the list with a gradient-preserved tensor
-        tensor_list[dist.get_rank()] = input_tensor
-
-        return torch.cat(tensor_list, dim=0)
-
     def _convert_to_binary_code(self, input_tensor: Tensor) -> Tensor:
         if self.training:
             if self.hparams.use_ste:
+                # Use the hashing method of straight-through estimator (STE).
                 hard_input_tensor = input_tensor.new_ones(input_tensor.size()).masked_fill_(input_tensor < 0, -1.0)
                 input_tensor = torch.tanh(input_tensor)
                 return hard_input_tensor + input_tensor - input_tensor.detach()
             else:
+                # Use the hashing method of HashNet.
                 # https://github.com/thuml/HashNet/blob/55bcaaa0bbaf0c404ca7a071b47d6287dc95e81d/pytorch/src/network.py#L40
                 scale = math.pow((1.0 + self.global_step * self.hparams.hashnet_gamma), 0.5)
                 return torch.tanh(input_tensor * scale)
         else:
             return input_tensor.new_ones(input_tensor.size()).masked_fill_(input_tensor < 0, -1.0)
 
-    def _compute_loss(self, encoded_question: Tensor, encoded_passage: Tensor) -> Dict[str, Tensor]:
-        # The i-th (zero-based) question's positive passage label is i * (num of passages per question)
-        # For example, if the number of passages per question is 2 (default), the positive passage label will be
-        # label = [0, 2, 4, ..., (num of questions - 1) * 2]
-        num_passages_per_question = encoded_passage.size(0) // encoded_question.size(0)
-        label = torch.arange(0, encoded_passage.size(0), num_passages_per_question).to(encoded_question.device)
+    def _compute_loss(
+        self, encoded_question: Tensor, encoded_passage: Tensor
+    ) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor]]:
+        num_questions = encoded_question.size(0)
 
-        output = {}
+        # Check the shapes of the input tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
 
         if self.hparams.binary:
-            binary_encoded_passage = self._convert_to_binary_code(encoded_passage)
-            dense_scores = torch.matmul(encoded_question, binary_encoded_passage.transpose(0, 1))
-            dense_loss = F.cross_entropy(dense_scores, label)
+            # Compute the BPR loss.
+            cand_loss, rerank_loss = self._compute_bpr_loss(
+                encoded_question,
+                encoded_passage,
+                no_cand_loss=self.hparams.no_cand_loss,
+                no_rerank_loss=self.hparams.no_rerank_loss,
+            )
+            loss = sum(loss for loss in [cand_loss, rerank_loss] if loss is not None)
+        else:
+            # Compute the DPR loss.
+            loss = self._compute_dpr_loss(encoded_question, encoded_passage)
+            cand_loss = None
+            rerank_loss = None
 
-            output["dense_loss"] = dense_loss.detach()
+        return loss, cand_loss, rerank_loss
 
-            binary_encoded_question = self._convert_to_binary_code(encoded_question)
+    def _compute_dpr_loss(self, encoded_question: Tensor, encoded_passage: Tensor) -> Tensor:
+        num_questions = encoded_question.size(0)
+
+        # Check the shapes of the input tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Compute the question-passsage similarity scores.
+        scores = torch.matmul(encoded_question, encoded_passage.transpose(0, 1))
+        assert scores.size() == (num_questions, num_questions * self.num_passages)
+
+        # Create the labels of the positive passages for each of the questions.
+        # The index of the positive passage for the i-th question is i * `num_passages`.
+        # For example, when `num_questions` is 8 and `num_passages` is 2, `passage_labels` will be [0, 2, 4, ..., 14].
+        passage_labels = torch.arange(0, num_questions * self.num_passages, self.num_passages).to(
+            encoded_question.device
+        )
+        assert passage_labels.size() == (num_questions,)
+
+        # Compute the cross entropy loss.
+        loss = F.cross_entropy(scores, passage_labels)
+
+        return loss
+
+    def _compute_bpr_loss(
+        self,
+        encoded_question: Tensor,
+        encoded_passage: Tensor,
+        no_cand_loss: bool = False,
+        no_rerank_loss: bool = False,
+    ) -> Tuple[Optional[Tensor], Optional[Tensor]]:
+        num_questions = encoded_question.size(0)
+
+        # Check the shapes of the input tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Create the labels of the positive passages for each of the questions.
+        # The index of the positive passage for the i-th question is i * `num_passages`.
+        # For example, when `num_questions` is 8 and `num_passages` is 2, `passage_labels` will be [0, 2, 4, ..., 14].
+        passage_labels = torch.arange(0, num_questions * self.num_passages, self.num_passages).to(
+            encoded_question.device
+        )
+        assert passage_labels.size() == (num_questions,)
+
+        # Binary-encode the questions and passages.
+        binary_encoded_question = self._convert_to_binary_code(encoded_question)
+        assert binary_encoded_question.size() == (num_questions, self.embed_size)
+        binary_encoded_passage = self._convert_to_binary_code(encoded_passage)
+        assert binary_encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Compute losses of two tasks (see the BPR paper for details).
+        # Task #1: compute the candidate generation loss.
+        if not no_cand_loss:
             binary_scores = torch.matmul(binary_encoded_question, binary_encoded_passage.transpose(0, 1))
-            if self.hparams.use_binary_cross_entropy_loss:
-                binary_loss = F.cross_entropy(binary_scores, label)
+            assert binary_scores.size() == (num_questions, num_questions * self.num_passages)
+
+            if self.hparams.cand_loss_use_cross_entropy:
+                # Compute the loss using a cross entropy loss
+                cand_loss = F.cross_entropy(binary_scores, passage_labels)
             else:
+                # Compute the loss using a ranking loss as described in the BPR paper
                 positive_mask = binary_scores.new_zeros(binary_scores.size(), dtype=torch.bool)
-                for i, label in enumerate(label):
+                for i, label in enumerate(passage_labels):
                     positive_mask[i, label] = True
 
                 positive_binary_scores = torch.masked_select(binary_scores, positive_mask)
-                positive_binary_scores = positive_binary_scores.repeat_interleave(binary_encoded_passage.size(0) - 1)
-                negative_binary_scores = torch.masked_select(binary_scores, torch.logical_not(positive_mask))
-                binary_labels = positive_binary_scores.new_ones(positive_binary_scores.size(), dtype=torch.long)
-                binary_loss = F.margin_ranking_loss(
+                assert positive_binary_scores.size() == (num_questions,)
+                positive_binary_scores = positive_binary_scores.repeat_interleave(num_questions * self.num_passages - 1)
+                assert positive_binary_scores.size() == (num_questions * (num_questions * self.num_passages - 1),)
+
+                negative_binary_scores = torch.masked_select(binary_scores, ~positive_mask)
+                assert positive_binary_scores.size() == (num_questions * (num_questions * self.num_passages - 1),)
+
+                ranking_loss_labels = torch.ones_like(positive_binary_scores, dtype=torch.long)
+                cand_loss = F.margin_ranking_loss(
                     positive_binary_scores,
                     negative_binary_scores,
-                    binary_labels,
-                    self.hparams.binary_ranking_loss_margin,
+                    ranking_loss_labels,
+                    self.hparams.cand_loss_margin,
                 )
-
-            output["binary_loss"] = binary_loss.detach()
-
-            if self.hparams.no_binary_loss:
-                output["loss"] = dense_loss
-            elif self.hparams.no_dense_loss:
-                output["loss"] = binary_loss
-            else:
-                output["loss"] = binary_loss + dense_loss
         else:
-            scores = torch.matmul(encoded_question, encoded_passage.transpose(0, 1))
-            loss = F.cross_entropy(scores, label)
-            output["loss"] = loss
+            cand_loss = None
 
-        return output
+        # Task #2: compute the reranking loss.
+        if not no_rerank_loss:
+            dense_scores = torch.matmul(encoded_question, binary_encoded_passage.transpose(0, 1))
+            assert dense_scores.size() == (num_questions, num_questions * self.num_passages)
+            rerank_loss = F.cross_entropy(dense_scores, passage_labels)
+        else:
+            rerank_loss = None
 
-    def _compute_ranks(self, encoded_question: Tensor, encoded_passage: Tensor, passage_labels: Tensor) -> Tensor:
+        return cand_loss, rerank_loss
+
+    def _compute_ranks(self, encoded_question: Tensor, encoded_passage: Tensor) -> Tensor:
+        num_questions = encoded_question.size(0)
+
+        # Check the shapes of the input tensors.
+        assert encoded_question.size() == (num_questions, self.embed_size)
+        assert encoded_passage.size() == (num_questions * self.num_passages, self.embed_size)
+
+        # Compute the question-passsage similarity scores.
         scores = torch.matmul(encoded_question, encoded_passage.transpose(0, 1))
-        gold_positions = passage_labels.nonzero(as_tuple=False).reshape(-1)
-        gold_scores = scores.gather(1, gold_positions.unsqueeze(1))
-        ranks = (scores > gold_scores).sum(1).float() + 1.0
+        assert scores.size() == (num_questions, num_questions * self.num_passages)
+
+        # Create the labels of the positive passages for each of the questions.
+        # The index of the positive passage for the i-th question is i * `num_passages`.
+        # For example, when `num_questions` is 8 and `num_passages` is 2, `passage_labels` will be [0, 2, 4, ..., 14].
+        passage_labels = torch.arange(0, num_questions * self.num_passages, self.num_passages).to(
+            encoded_question.device
+        )
+        assert passage_labels.size() == (num_questions,)
+
+        # Aggregate the scores of the labeled passages.
+        positive_passage_scores = scores.gather(dim=1, index=passage_labels.unsqueeze(1))
+        assert positive_passage_scores.size() == (num_questions, 1)
+
+        # Compute the ranks of the labeled passages.
+        ranks = (scores > positive_passage_scores).sum(dim=1).float() + 1.0
+        assert ranks.size() == (num_questions,)
 
         return ranks
 
     def configure_optimizers(self) -> Tuple[List[Optimizer], List[Dict[str, Any]]]:
-        # set up the optimizer
+        # Set up the optimizer.
         optimizer_parameters = [
             {"params": [], "weight_decay": 0.0},
             {"params": [], "weight_decay": self.hparams.weight_decay},
@@ -590,7 +853,7 @@ class BiencoderLightningModule(LightningModule):
 
         optimizer = AdamW(optimizer_parameters, lr=self.hparams.learning_rate)
 
-        # set up the learning rate scheduler
+        # Set up the learning rate scheduler.
         num_training_steps = int(
             len(self.train_dataloader().batch_sampler)
             // self.trainer.accumulate_grad_batches
