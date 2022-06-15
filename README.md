@@ -40,8 +40,7 @@ We used 4 GPUs with 12GB memory each for the experiments.
 $ python build_passage_db.py \
     --passage_file <DPR_DATASET_DIR>/wikipedia_split/psgs_w100.tsv \
     --db_file <WORK_DIR>/passages.db \
-    --db_map_size 21000000000 \
-    --skip_header
+    --db_map_size 21000000000
 ```
 
 **2. Train a biencoder**
