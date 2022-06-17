@@ -110,5 +110,7 @@ if submitted and len(question) > 0:
                 # Format other special tokens.
                 for special_token in qa_model.reader_tokenization.tokenizer.all_special_tokens:
                     input_text = input_text.replace(special_token, f"`{special_token}`")
-
+                
+                input_text = input_text.replace("``", "")
+                
                 st.markdown(input_text.strip())
