@@ -600,10 +600,8 @@ class BiencoderLightningModule(LightningModule):
         # Gather tensors distributed to multiple devices.
         if distributed_available():
             if self.hparams.use_pl_all_gather:
-                encoded_question = self.all_gather(encoded_question, sync_grads=True)
-                encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
-                encoded_passage = self.all_gather(encoded_passage, sync_grads=True)
-                encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+                encoded_question = self._gather_distributed_tensors_pl(encoded_question)
+                encoded_passage = self._gather_distributed_tensors_pl(encoded_passage)
             else:
                 encoded_question = self._gather_distributed_tensors(encoded_question)
                 encoded_passage = self._gather_distributed_tensors(encoded_passage)
@@ -649,10 +647,8 @@ class BiencoderLightningModule(LightningModule):
         # Gather tensors distributed to multiple devices.
         if distributed_available():
             if self.hparams.use_pl_all_gather:
-                encoded_question = self.all_gather(encoded_question)
-                encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
-                encoded_passage = self.all_gather(encoded_passage)
-                encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+                encoded_question = self._gather_distributed_tensors_pl(encoded_question)
+                encoded_passage = self._gather_distributed_tensors_pl(encoded_passage)
             else:
                 encoded_question = self._gather_distributed_tensors(encoded_question)
                 encoded_passage = self._gather_distributed_tensors(encoded_passage)
@@ -691,6 +687,13 @@ class BiencoderLightningModule(LightningModule):
         tensor_list[dist.get_rank()] = input_tensor
 
         return torch.cat(tensor_list, dim=0)
+
+    def _gather_distributed_tensors_pl(self, input_tensor: Tensor) -> Tensor:
+        gathered_tensor = self.all_gather(input_tensor.detach())  # (batch_size, ...) -> (world_size, batch_size, ...)
+        # Overwrite a portion of the list with a gradient-preserved tensor
+        gathered_tensor[dist.get_rank()] = input_tensor
+
+        return torch.cat(list(gathered_tensor), dim=0)  # (world_size, batch_size, ...) -> (batch_size, ...)
 
     def _convert_to_binary_code(self, input_tensor: Tensor) -> Tensor:
         if self.training:
