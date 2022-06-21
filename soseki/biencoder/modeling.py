@@ -257,6 +257,9 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--weight_decay", type=float, default=0.0)
         parser.add_argument("--eval_rank_start_epoch", type=int, default=0)
 
+        # Temporary params.
+        parser.add_argument("--use_pl_all_gather", action="store_true")
+
         return parent_parser
 
     def setup(self, stage: str) -> None:
@@ -596,10 +599,14 @@ class BiencoderLightningModule(LightningModule):
 
         # Gather tensors distributed to multiple devices.
         if distributed_available():
-            encoded_question = self.all_gather(encoded_question, sync_grads=True)
-            encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
-            encoded_passage = self.all_gather(encoded_passage, sync_grads=True)
-            encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+            if self.hparams.use_pl_all_gather:
+                encoded_question = self.all_gather(encoded_question, sync_grads=True)
+                encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
+                encoded_passage = self.all_gather(encoded_passage, sync_grads=True)
+                encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+            else:
+                encoded_question = self._gather_distributed_tensors(encoded_question)
+                encoded_passage = self._gather_distributed_tensors(encoded_passage)
 
         num_questions = encoded_question.size(0)
 
@@ -641,10 +648,14 @@ class BiencoderLightningModule(LightningModule):
 
         # Gather tensors distributed to multiple devices.
         if distributed_available():
-            encoded_question = self.all_gather(encoded_question)
-            encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
-            encoded_passage = self.all_gather(encoded_passage)
-            encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+            if self.hparams.use_pl_all_gather:
+                encoded_question = self.all_gather(encoded_question)
+                encoded_question = encoded_question.view(-1, self.question_encoder.output_dim)
+                encoded_passage = self.all_gather(encoded_passage)
+                encoded_passage = encoded_passage.view(-1, self.passage_encoder.output_dim)
+            else:
+                encoded_question = self._gather_distributed_tensors(encoded_question)
+                encoded_passage = self._gather_distributed_tensors(encoded_passage)
 
         num_questions = encoded_question.size(0)
 
@@ -672,6 +683,14 @@ class BiencoderLightningModule(LightningModule):
             avg_rank = 10000000.0
 
         self.log("val_avg_rank", avg_rank)
+
+    def _gather_distributed_tensors(self, input_tensor: Tensor) -> Tensor:
+        tensor_list = [torch.empty_like(input_tensor) for _ in range(dist.get_world_size())]
+        dist.all_gather(tensor_list, input_tensor)
+        # overwrite a portion of the list with a gradient-preserved tensor
+        tensor_list[dist.get_rank()] = input_tensor
+
+        return torch.cat(tensor_list, dim=0)
 
     def _convert_to_binary_code(self, input_tensor: Tensor) -> Tensor:
         if self.training:
@@ -865,3 +884,11 @@ class BiencoderLightningModule(LightningModule):
         lr_scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
 
         return [optimizer], [{"scheduler": lr_scheduler, "interval": "step"}]
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
+                       optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
+        grad = self.passage_encoder.encoder.encoder.layer[-1].output.dense.weight.grad
+        if grad is not None:
+            self.log("grad", torch.linalg.norm(grad).detach())
+
+        optimizer.step(closure=optimizer_closure)
