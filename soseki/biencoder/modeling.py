@@ -257,9 +257,6 @@ class BiencoderLightningModule(LightningModule):
         parser.add_argument("--weight_decay", type=float, default=0.0)
         parser.add_argument("--eval_rank_start_epoch", type=int, default=0)
 
-        # Temporary params.
-        parser.add_argument("--use_pl_all_gather", action="store_true")
-
         return parent_parser
 
     def setup(self, stage: str) -> None:
@@ -599,12 +596,8 @@ class BiencoderLightningModule(LightningModule):
 
         # Gather tensors distributed to multiple devices.
         if distributed_available():
-            if self.hparams.use_pl_all_gather:
-                encoded_question = self._gather_distributed_tensors_pl(encoded_question)
-                encoded_passage = self._gather_distributed_tensors_pl(encoded_passage)
-            else:
-                encoded_question = self._gather_distributed_tensors(encoded_question)
-                encoded_passage = self._gather_distributed_tensors(encoded_passage)
+            encoded_question = self._gather_distributed_tensors(encoded_question)
+            encoded_passage = self._gather_distributed_tensors(encoded_passage)
 
         num_questions = encoded_question.size(0)
 
@@ -646,12 +639,8 @@ class BiencoderLightningModule(LightningModule):
 
         # Gather tensors distributed to multiple devices.
         if distributed_available():
-            if self.hparams.use_pl_all_gather:
-                encoded_question = self._gather_distributed_tensors_pl(encoded_question)
-                encoded_passage = self._gather_distributed_tensors_pl(encoded_passage)
-            else:
-                encoded_question = self._gather_distributed_tensors(encoded_question)
-                encoded_passage = self._gather_distributed_tensors(encoded_passage)
+            encoded_question = self._gather_distributed_tensors(encoded_question)
+            encoded_passage = self._gather_distributed_tensors(encoded_passage)
 
         num_questions = encoded_question.size(0)
 
@@ -681,19 +670,11 @@ class BiencoderLightningModule(LightningModule):
         self.log("val_avg_rank", avg_rank)
 
     def _gather_distributed_tensors(self, input_tensor: Tensor) -> Tensor:
-        tensor_list = [torch.empty_like(input_tensor) for _ in range(dist.get_world_size())]
-        dist.all_gather(tensor_list, input_tensor)
-        # overwrite a portion of the list with a gradient-preserved tensor
-        tensor_list[dist.get_rank()] = input_tensor
-
-        return torch.cat(tensor_list, dim=0)
-
-    def _gather_distributed_tensors_pl(self, input_tensor: Tensor) -> Tensor:
         gathered_tensor = self.all_gather(input_tensor.detach())  # (batch_size, ...) -> (world_size, batch_size, ...)
-        # Overwrite a portion of the list with a gradient-preserved tensor
+        # Overwrite a portion of the tensor with a gradient-preserved one
         gathered_tensor[dist.get_rank()] = input_tensor
 
-        return torch.cat(list(gathered_tensor), dim=0)  # (world_size, batch_size, ...) -> (batch_size, ...)
+        return torch.cat(list(gathered_tensor), dim=0)  # (world_size, batch_size, ...) -> (world_size * batch_size, ...)
 
     def _convert_to_binary_code(self, input_tensor: Tensor) -> Tensor:
         if self.training:
