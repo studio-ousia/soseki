@@ -3,6 +3,9 @@ import argparse
 import streamlit as st
 
 
+DEFAULT_QUESTION = "Who won the first Nobel Prize in Physics?"
+
+
 st.set_page_config(
     page_title="Question Answering Machine",
     page_icon=":robot_face:",
@@ -50,32 +53,38 @@ def get_qa_model():
             passage_file=args.passage_file,
             device=args.device,
         )
+
     return model
 
 
 qa_model = get_qa_model()
 
+# Write the page title.
 st.title(":robot_face: Question Answering Machine :robot_face:")
 
-default_question = "Who won the first Nobel Prize in Physics?"
-
+# Write the question input form.
 with st.form("question_form"):
-    question = st.text_input("Input a question:", value=default_question, max_chars=200)
+    question = st.text_input("Input a question:", value=DEFAULT_QUESTION, max_chars=200)
     submitted = st.form_submit_button("Go")
 
 if submitted and len(question) > 0:
+    # Write the question.
     st.header("Question")
     st.write(question)
 
+    # Write the answer candidates.
     st.header("Answer Candidates")
+    # Fetch the answer candidates.
     with st.spinner("Computing..."):
-        answer_candidates = qa_model.answer_question(question, num_reading_passages=3)
+        answer_candidates = qa_model.answer_question(question, num_passages_to_read=3)
 
     for i, answer_candidate in enumerate(answer_candidates):
+        input_text = answer_candidate.input_text
         answer_text = answer_candidate.answer_text
-        passage_text = answer_candidate.passage_text
+        answer_start, answer_end = answer_candidate.answer_text_span
 
         with st.container():
+            # Write the header of the candidate.
             if i == 0:
                 emoji = ":first_place_medal:"
             elif i == 1:
@@ -88,8 +97,20 @@ if submitted and len(question) > 0:
             st.subheader(emoji + " " + answer_text)
             st.caption("Score: {:.4f}".format(answer_candidate.score))
 
-            with st.expander("Show Passage", expanded=i == 0):
-                passage_text = passage_text.replace(answer_text, "**{}**".format(answer_text))
-                passage_text = passage_text.replace("[SEP]", "--", 1)
-                passage_text = passage_text.replace("[SEP]", "")
-                st.markdown(passage_text.strip())
+            # Write the candidate's reader input to an expander component.
+            with st.expander("Show the Reader Input", expanded=i == 0):
+                # Highlight the answer span.
+                input_text = input_text[:answer_start] + "**{}**".format(answer_text) + input_text[answer_end:]
+
+                # Remove the pad tokens.
+                pad_token = getattr(qa_model.reader_tokenization.tokenizer, "pad_token", None) or None
+                if pad_token is not None:
+                    input_text = input_text.replace(pad_token, "")
+
+                # Format other special tokens.
+                for special_token in qa_model.reader_tokenization.tokenizer.all_special_tokens:
+                    input_text = input_text.replace(special_token, f"`{special_token}`")
+
+                input_text = input_text.replace("``", "")
+
+                st.markdown(input_text.strip())

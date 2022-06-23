@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional, Union
 
 import torch
 
@@ -6,6 +6,7 @@ from ..biencoder.modeling import BiencoderLightningModule
 from ..retriever.binary_retriever import BinaryRetriever
 from ..retriever.dense_retriever import DenseRetriever
 from ..reader.modeling import ReaderLightningModule
+from ..utils.data_utils import AnswerCandidate, RetrievedPassage
 
 
 class EndToEndQuestionAnswering:
@@ -17,13 +18,19 @@ class EndToEndQuestionAnswering:
         passage_db_file: Optional[str] = None,
         passage_file: Optional[str] = None,
         device: Optional[torch.device] = "cpu",
-    ):
+    ) -> None:
         self.biencoder = BiencoderLightningModule.load_from_checkpoint(biencoder_ckpt_file, map_location="cpu")
         self.reader = ReaderLightningModule.load_from_checkpoint(reader_ckpt_file, map_location="cpu")
         self.biencoder.freeze()
         self.reader.freeze()
 
-        self.binary = self.biencoder.hparams["binary"]
+        self.encoder_tokenization = self.biencoder.tokenization
+        self.reader_tokenization = self.reader.tokenization
+
+        self.max_question_length = self.biencoder.hparams.max_question_length
+        self.max_reader_input_length = self.reader.hparams.max_input_length
+
+        self.binary = self.biencoder.hparams.binary
         if self.binary:
             self.retriever = BinaryRetriever(
                 passage_embeddings_file, passage_db_file=passage_db_file, passage_file=passage_file
@@ -37,59 +44,66 @@ class EndToEndQuestionAnswering:
         self.biencoder.to(self.device)
         self.reader.to(self.device)
 
+    def retrieve_top_k_passages(
+        self,
+        questions: Union[str, List[str]],
+        k: int = 10,
+        binary_k: int = 2048,
+    ) -> List[List[RetrievedPassage]]:
+        encoder_inputs = self.encoder_tokenization.tokenize_questions(
+            questions,
+            padding=True,
+            truncation=True,
+            max_length=self.max_question_length,
+            return_tensors="pt",
+        )
+        encoder_inputs = {key: tensor.to(self.device) for key, tensor in encoder_inputs.items()}
+        encoded_questions = self.biencoder.question_encoder(encoder_inputs).cpu().numpy()
+
+        if self.binary:
+            return self.retriever.retrieve_top_k_passages(encoded_questions, k=k, binary_k=binary_k)
+        else:
+            return self.retriever.retrieve_top_k_passages(encoded_questions, k=k)
+
     def answer_question(
         self,
         question: str,
         num_retrieval_passages: int = 10,
-        num_reading_passages: int = 1,
+        num_passages_to_read: int = 1,
         num_answer_candidates_per_passage: int = 1,
-    ):
+    ) -> List[AnswerCandidate]:
         with torch.no_grad():
-            encoder_inputs = dict(
-                self.biencoder.tokenization.tokenize_questions(
-                    question,
-                    padding=True,
-                    truncation=True,
-                    max_length=self.biencoder.hparams.max_question_length,
-                    return_tensors="pt",
-                )
-            )
-            encoder_inputs = {key: tensor.to(self.device) for key, tensor in encoder_inputs.items()}
-            encoded_questions = self.biencoder.question_encoder(**encoder_inputs).cpu().numpy()
+            # Retrieve passages for the question.
+            retrieved_passages = self.retrieve_top_k_passages(question, k=num_retrieval_passages)[0]
 
-            retrieved_passages = self.retriever.retrieve_top_k_passages(encoded_questions, k=num_retrieval_passages)[0]
-
-            input_ids = []
-            attention_mask = []
-            token_type_ids = []
+            # Tokenize pairs of the question and a passage, which make the inputs to the reader.
+            reader_inputs = []
             for passage in retrieved_passages:
-                encoded_question_and_passage = self.reader.tokenization.tokenize_input(
+                reader_input = self.reader.tokenization.tokenize_input(
                     question,
                     passage.title,
                     passage.text,
                     padding="max_length",
                     truncation="only_second",
-                    max_length=self.reader.hparams.max_input_length,
+                    max_length=self.max_reader_input_length,
                 )
-                input_ids.append(encoded_question_and_passage["input_ids"])
-                attention_mask.append(encoded_question_and_passage["attention_mask"])
-                token_type_ids.append(encoded_question_and_passage["token_type_ids"])
+                reader_inputs.append(reader_input)
 
-            input_ids = torch.tensor([input_ids]).to(self.device)
-            attention_mask = torch.tensor([attention_mask]).to(self.device)
-            token_type_ids = torch.tensor([token_type_ids]).to(self.device)
+            # Tensorize the reader inputs.
+            reader_inputs = {
+                key: torch.tensor([x[key] for x in reader_inputs]).to(self.device) for key in reader_inputs[0].keys()
+            }
 
-            classifier_logits, start_logits, end_logits = self.reader.forward(
-                {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids}
-            )
+            # Apply the reader's inference to the input.
+            classifier_logits, start_logits, end_logits = self.reader.forward(reader_inputs)
+
+            # Generate answer candidates from the reader's inference.
             answer_candidates = self.reader.generate_answer_candidates(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids,
+                input_ids=reader_inputs["input_ids"],
                 classifier_logits=classifier_logits,
                 start_logits=start_logits,
                 end_logits=end_logits,
-                num_reading_passages=num_reading_passages,
+                num_passages_to_read=num_passages_to_read,
                 num_answer_candidates_per_passage=num_answer_candidates_per_passage,
-            )[0]
+            )
             return answer_candidates

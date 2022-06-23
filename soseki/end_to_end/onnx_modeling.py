@@ -19,7 +19,7 @@ class OnnxEndToEndQuestionAnswering:
         passage_embeddings_file: str,
         passage_db_file: Optional[str] = None,
         passage_file: Optional[str] = None,
-    ):
+    ) -> None:
         question_encoder_onnx_file = os.path.join(onnx_model_dir, "question_encoder.onnx")
         reader_onnx_file = os.path.join(onnx_model_dir, "reader.onnx")
 
@@ -37,7 +37,6 @@ class OnnxEndToEndQuestionAnswering:
         )
         self.reader_tokenization = ReaderTokenization(
             base_model_name=reader_hparams["base_pretrained_model"],
-            include_title_in_passage=reader_hparams["include_title_in_passage"],
             answer_normalization_type=reader_hparams["answer_normalization_type"],
         )
 
@@ -77,65 +76,74 @@ class OnnxEndToEndQuestionAnswering:
     def _generate_answer_candidates(
         self,
         input_ids: np.ndarray,
-        attention_mask: np.ndarray,
-        token_type_ids: np.ndarray,
         classifier_logits: np.ndarray,
         start_logits: np.ndarray,
         end_logits: np.ndarray,
-        num_reading_passages: int = 1,
+        num_passages_to_read: int = 1,
         num_answer_candidates_per_passage: int = 1,
-    ) -> List[List[AnswerCandidate]]:
-        # obtain passage indices with highest classifier logit
-        top_passage_idxs = classifier_logits.argsort()[::-1][:num_reading_passages]
+        max_answer_length: int = 10,
+    ) -> List[AnswerCandidate]:
+        num_passages, max_input_length = input_ids.shape
 
-        answer_candidates: List[AnswerCandidate] = []
+        # Check the shapes of the input arrays.
+        assert input_ids.shape == (num_passages, max_input_length)
+        assert classifier_logits.shape == (num_passages,)
+        assert start_logits.shape == (num_passages, max_input_length)
+        assert end_logits.shape == (num_passages, max_input_length)
+
+        # Obtain `num_passages_to_read` passage indices with highest classifier logits.
+        top_passage_idxs = classifier_logits.argsort()[::-1][:num_passages_to_read]
+        assert top_passage_idxs.shape == (min(num_passages, num_passages_to_read),)
+
+        # Generate answer candidates for each passage of the question.
+        answer_candidates = []
         for pi in top_passage_idxs.tolist():
             answer_spans = self.reader_tokenization._compute_best_answer_spans(
                 input_ids=input_ids[pi].tolist(),
-                attention_mask=attention_mask[pi].tolist(),
-                token_type_ids=token_type_ids[pi].tolist(),
                 start_logits=start_logits[pi].tolist(),
                 end_logits=end_logits[pi].tolist(),
                 num_answer_spans=num_answer_candidates_per_passage,
+                max_answer_length=max_answer_length,
             )
             for answer_span in answer_spans:
-                answer_text, passage_text = self.reader_tokenization._get_answer_passage_texts_from_input_ids(
+                input_text, answer_text, answer_text_span = self.reader_tokenization._get_input_and_answer_texts(
                     input_ids=input_ids[pi].tolist(),
-                    attention_mask=attention_mask[pi].tolist(),
-                    token_type_ids=token_type_ids[pi].tolist(),
                     answer_span=answer_span,
                 )
-                passage_score = classifier_logits[pi].item()
+                classifier_score = classifier_logits[pi].item()
                 span_score = answer_span.start_logit + answer_span.end_logit
-                answer_score = passage_score + span_score
+                answer_score = classifier_score + span_score
 
                 answer_candidates.append(
                     AnswerCandidate(
+                        input_text=input_text,
                         answer_text=answer_text,
-                        passage_text=passage_text,
+                        answer_text_span=answer_text_span,
                         score=answer_score,
-                        passage_score=passage_score,
+                        classifier_score=classifier_score,
                         span_score=span_score,
                     )
                 )
 
+        # The answer candidates are sorted by their scores in descending order.
         answer_candidates = sorted(answer_candidates, key=lambda x: x.score, reverse=True)
+
         return answer_candidates
 
     def answer_question(
         self,
         question: str,
         num_retrieval_passages: int = 10,
-        num_reading_passages: int = 1,
+        num_passages_to_read: int = 1,
         num_answer_candidates_per_passage: int = 1,
-    ):
+    ) -> List[AnswerCandidate]:
+        # Retrieve passages for the question.
         retrieved_passages = self.retrieve_top_k_passages(question, k=num_retrieval_passages)[0]
 
-        input_ids = []
-        attention_mask = []
-        token_type_ids = []
+        # Tokenize pairs of the question and a passage, which make the inputs to the reader.
+        reader_inputs = []
         for passage in retrieved_passages:
-            encoded_question_and_passage = self.reader_tokenization.tokenize_input(
+            reader_input = self.reader_tokenization.tokenize_input(
                 question,
                 passage.title,
                 passage.text,
@@ -143,25 +151,21 @@ class OnnxEndToEndQuestionAnswering:
                 truncation="only_second",
                 max_length=self.max_reader_input_length,
             )
-            input_ids.append(encoded_question_and_passage["input_ids"])
-            attention_mask.append(encoded_question_and_passage["attention_mask"])
-            token_type_ids.append(encoded_question_and_passage["token_type_ids"])
+            reader_inputs.append(reader_input)
 
-        input_ids = np.array(input_ids)
-        attention_mask = np.array(attention_mask)
-        token_type_ids = np.array(token_type_ids)
+        # Tensorize the reader inputs.
+        reader_inputs = {key: np.array([x[key] for x in reader_inputs]) for key in reader_inputs[0].keys()}
 
-        classifier_logits, start_logits, end_logits = self.reader_session.run(
-            None, {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids}
-        )
+        # Apply the reader's inference to the input.
+        classifier_logits, start_logits, end_logits = self.reader_session.run(None, dict(reader_inputs))
+
+        # Generate answer candidates from the reader's inference.
         answer_candidates = self._generate_answer_candidates(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
+            input_ids=reader_inputs["input_ids"],
             classifier_logits=classifier_logits,
             start_logits=start_logits,
             end_logits=end_logits,
-            num_reading_passages=num_reading_passages,
+            num_passages_to_read=num_passages_to_read,
             num_answer_candidates_per_passage=num_answer_candidates_per_passage,
         )
         return answer_candidates

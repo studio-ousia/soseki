@@ -15,9 +15,10 @@ RUN pip install --no-cache-dir \
         lmdb \
         numpy \
         onnxruntime \
+        sentencepiece \
+        streamlit \
         tqdm \
-        transformers \
-        streamlit
+        transformers[ja]
 
 # Download transformers models in advance
 ARG TRANSFORMERS_BASE_MODEL_NAME="bert-base-uncased"

@@ -8,15 +8,20 @@ BPR was originally developed to achieve high computational efficiency of the QA 
 ## Installation
 
 ```sh
-# Before installation, upgrade pip and setuptools
+# Before installation, upgrade pip and setuptools.
 $ pip install -U pip setuptools
 
-# For reproducing experiments, install dependencies with sepcific versions beforehand
+# Install the PyTorch package.
+# You may want to check the install option for your CUDA environment.
+# https://pytorch.org/get-started/locally/
+$ pip install 'torch==1.11.0'
+
+# Install other dependencies.
 $ pip install -r requirements.txt
 
-# Install the soseki package
+# Install the soseki package.
 $ pip install .
-# If you want to install it in editable mode
+# Or if you want to install it in editable mode:
 $ pip install -e .
 ```
 
@@ -27,7 +32,7 @@ $ pip install -e .
 Before you start, you need to download the datasets available on the
 [DPR repository](https://github.com/facebookresearch/DPR) into `<DPR_DATASET_DIR>`.
 
-We used a server with 4 GeForce RTX 2080 GPUs with 11GB memory for the experiments.
+We used 4 GPUs with 12GB memory each for the experiments.
 
 **1. Build passage database**
 
@@ -35,8 +40,7 @@ We used a server with 4 GeForce RTX 2080 GPUs with 11GB memory for the experimen
 $ python build_passage_db.py \
     --passage_file <DPR_DATASET_DIR>/wikipedia_split/psgs_w100.tsv \
     --db_file <WORK_DIR>/passages.db \
-    --db_map_size 21000000000 \
-    --skip_header
+    --db_map_size 21000000000
 ```
 
 **2. Train a biencoder**
@@ -44,7 +48,7 @@ $ python build_passage_db.py \
 ```sh
 $ python train_biencoder.py \
     --train_file <DPR_DATASET_DIR>/retriever/nq-train.json \
-    --dev_file <DPR_DATASET_DIR>/retriever/nq-dev.json \
+    --val_file <DPR_DATASET_DIR>/retriever/nq-dev.json \
     --output_dir <WORK_DIR>/biencoder \
     --max_question_length 64 \
     --max_passage_length 192 \
@@ -61,14 +65,14 @@ $ python train_biencoder.py \
     --max_epochs 40 \
     --gpus 4 \
     --precision 16 \
-    --accelerator ddp
+    --strategy ddp
 ```
 
 **3. Build passage embeddings**
 
 ```sh
 $ python build_passage_embeddings.py \
-    --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/best.ckpt \
+    --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/last.ckpt \
     --passage_db_file <WORK_DIR>/passages.db \
     --output_file <WORK_DIR>/passage_embeddings.idx \
     --max_passage_length 192 \
@@ -96,13 +100,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.4867 (38529/79168)
-# Recall at 2: 0.6059 (47964/79168)
-# Recall at 5: 0.7275 (57592/79168)
-# Recall at 10: 0.7862 (62245/79168)
-# Recall at 20: 0.8251 (65319/79168)
-# Recall at 50: 0.8588 (67991/79168)
-# Recall at 100: 0.8748 (69255/79168)
+# Recall at 1: 0.4993 (39532/79168)
+# Recall at 2: 0.6175 (48886/79168)
+# Recall at 5: 0.7353 (58213/79168)
+# Recall at 10: 0.7919 (62690/79168)
+# Recall at 20: 0.8288 (65613/79168)
+# Recall at 50: 0.8597 (68061/79168)
+# Recall at 100: 0.8751 (69281/79168)
 
 $ python evaluate_retriever.py \
     --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/last.ckpt \
@@ -119,13 +123,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.3984 (3489/8757)
-# Recall at 2: 0.5085 (4453/8757)
-# Recall at 5: 0.6377 (5584/8757)
-# Recall at 10: 0.7075 (6196/8757)
-# Recall at 20: 0.7588 (6645/8757)
-# Recall at 50: 0.8122 (7112/8757)
-# Recall at 100: 0.8409 (7364/8757)
+# Recall at 1: 0.4047 (3544/8757)
+# Recall at 2: 0.5143 (4504/8757)
+# Recall at 5: 0.6398 (5603/8757)
+# Recall at 10: 0.7117 (6232/8757)
+# Recall at 20: 0.7595 (6651/8757)
+# Recall at 50: 0.8134 (7123/8757)
+# Recall at 100: 0.8420 (7373/8757)
 
 $ python evaluate_retriever.py \
     --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/last.ckpt \
@@ -142,13 +146,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.4058 (1465/3610)
-# Recall at 2: 0.5191 (1874/3610)
-# Recall at 5: 0.6443 (2326/3610)
-# Recall at 10: 0.7144 (2579/3610)
-# Recall at 20: 0.7687 (2775/3610)
-# Recall at 50: 0.8233 (2972/3610)
-# Recall at 100: 0.8504 (3070/3610)
+# Recall at 1: 0.4136 (1493/3610)
+# Recall at 2: 0.5208 (1880/3610)
+# Recall at 5: 0.6452 (2329/3610)
+# Recall at 10: 0.7194 (2597/3610)
+# Recall at 20: 0.7737 (2793/3610)
+# Recall at 50: 0.8283 (2990/3610)
+# Recall at 100: 0.8518 (3075/3610)
 ```
 
 **5. Train a reader**
@@ -156,16 +160,16 @@ $ python evaluate_retriever.py \
 ```sh
 $ python train_reader.py \
     --train_file <WORK_DIR>/reader_data/nq_train.jsonl \
-    --dev_file <WORK_DIR>/reader_data/nq_dev.jsonl  \
+    --val_file <WORK_DIR>/reader_data/nq_dev.jsonl \
     --output_dir <WORK_DIR>/reader \
     --train_num_passages 24 \
     --eval_num_passages 100 \
     --max_input_length 256 \
-    --include_title_in_passage \
     --shuffle_positive_passage \
     --shuffle_negative_passage \
     --num_dataloader_workers 1 \
     --base_pretrained_model bert-base-uncased \
+    --answer_normalization_type dpr \
     --train_batch_size 1 \
     --eval_batch_size 2 \
     --learning_rate 1e-5 \
@@ -175,8 +179,7 @@ $ python train_reader.py \
     --max_epochs 20 \
     --gpus 4 \
     --precision 16 \
-    --accelerator ddp \
-    --answer_normalization_type dpr
+    --strategy ddp
 ```
 
 **6. Evaluate the reader**
@@ -189,13 +192,14 @@ $ python evaluate_reader.py \
     --test_max_load_passages 100 \
     --test_batch_size 4 \
     --gpus 4 \
-    --accelerator ddp
+    --strategy ddp
 # The result should be printed as follows:
-# --------------------------------------------------------------------------------
-# DATALOADER:0 TEST RESULTS
-# {'test_answer_accuracy': 0.3944272994995117,
-#  'test_classifier_precision': 0.5893570780754089}
-# --------------------------------------------------------------------------------
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃        Test metric        ┃       DataLoader 0        ┃
+# ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+# │   test_answer_accuracy    │    0.39294278621673584    │
+# │ test_classifier_precision │    0.5889003276824951     │
+# └───────────────────────────┴───────────────────────────┘
 ```
 
 ```sh
@@ -206,13 +210,14 @@ $ python evaluate_reader.py \
     --test_max_load_passages 100 \
     --test_batch_size 4 \
     --gpus 4 \
-    --accelerator ddp
+    --strategy ddp
 # The result should be printed as follows:
-# --------------------------------------------------------------------------------
-# DATALOADER:0 TEST RESULTS
-# {'test_answer_accuracy': 0.3889196813106537,
-#  'test_classifier_precision': 0.5728532075881958}
-# --------------------------------------------------------------------------------
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃        Test metric        ┃       DataLoader 0        ┃
+# ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+# │   test_answer_accuracy    │    0.3900277018547058     │
+# │ test_classifier_precision │    0.5836564898490906     │
+# └───────────────────────────┴───────────────────────────┘
 ```
 
 **7. (optional) Convert the trained models into ONNX format**
@@ -249,12 +254,12 @@ Then open http://localhost:8501.
 The demo can also be launched with Docker:
 
 ```sh
-$ docker build -t soseki .
-$ docker run --rm -v <WORK_DIR>:/app/models -p 8501:8501 -it soseki \
+$ docker build -t soseki --build-arg TRANSFORMERS_BASE_MODEL_NAME='bert-base-uncased' .
+$ docker run --rm -v $(realpath <WORK_DIR>):/app/model -p 8501:8501 -it soseki \
     streamlit run demo.py --browser.serverAddress localhost --browser.serverPort 8501 -- \
-        --onnx_model_dir models/onnx \
-        --passage_db_file models/passages.db \
-        --passage_embeddings_file models/passage_embeddings.idx
+        --onnx_model_dir /app/model/onnx \
+        --passage_db_file /app/model/passages.db \
+        --passage_embeddings_file /app/model/passage_embeddings.idx
 ```
 
 ## License
