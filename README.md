@@ -100,13 +100,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.4966 (39317/79168)
-# Recall at 2: 0.6142 (48625/79168)
-# Recall at 5: 0.7327 (58007/79168)
-# Recall at 10: 0.7898 (62523/79168)
-# Recall at 20: 0.8270 (65474/79168)
-# Recall at 50: 0.8594 (68040/79168)
-# Recall at 100: 0.8748 (69253/79168)
+# Recall at 1: 0.4993 (39532/79168)
+# Recall at 2: 0.6175 (48886/79168)
+# Recall at 5: 0.7353 (58213/79168)
+# Recall at 10: 0.7919 (62690/79168)
+# Recall at 20: 0.8288 (65613/79168)
+# Recall at 50: 0.8597 (68061/79168)
+# Recall at 100: 0.8751 (69281/79168)
 
 $ python evaluate_retriever.py \
     --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/last.ckpt \
@@ -123,13 +123,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.4086 (3578/8757)
-# Recall at 2: 0.5147 (4507/8757)
-# Recall at 5: 0.6359 (5569/8757)
-# Recall at 10: 0.7082 (6202/8757)
-# Recall at 20: 0.7605 (6660/8757)
-# Recall at 50: 0.8129 (7119/8757)
-# Recall at 100: 0.8388 (7345/8757)
+# Recall at 1: 0.4047 (3544/8757)
+# Recall at 2: 0.5143 (4504/8757)
+# Recall at 5: 0.6398 (5603/8757)
+# Recall at 10: 0.7117 (6232/8757)
+# Recall at 20: 0.7595 (6651/8757)
+# Recall at 50: 0.8134 (7123/8757)
+# Recall at 100: 0.8420 (7373/8757)
 
 $ python evaluate_retriever.py \
     --biencoder_file <WORK_DIR>/biencoder/lightning_logs/version_0/checkpoints/last.ckpt \
@@ -146,13 +146,13 @@ $ python evaluate_retriever.py \
     --include_title_in_passage \
     --device_ids 0 1 2 3
 # The result should be logged as follows:
-# Recall at 1: 0.4194 (1514/3610)
-# Recall at 2: 0.5338 (1927/3610)
-# Recall at 5: 0.6560 (2368/3610)
-# Recall at 10: 0.7235 (2612/3610)
-# Recall at 20: 0.7720 (2787/3610)
-# Recall at 50: 0.8186 (2955/3610)
-# Recall at 100: 0.8501 (3069/3610)
+# Recall at 1: 0.4136 (1493/3610)
+# Recall at 2: 0.5208 (1880/3610)
+# Recall at 5: 0.6452 (2329/3610)
+# Recall at 10: 0.7194 (2597/3610)
+# Recall at 20: 0.7737 (2793/3610)
+# Recall at 50: 0.8283 (2990/3610)
+# Recall at 100: 0.8518 (3075/3610)
 ```
 
 **5. Train a reader**
@@ -197,8 +197,8 @@ $ python evaluate_reader.py \
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃        Test metric        ┃       DataLoader 0        ┃
 # ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-# │   test_answer_accuracy    │     0.39237180352211      │
-# │ test_classifier_precision │    0.5836473703384399     │
+# │   test_answer_accuracy    │    0.39294278621673584    │
+# │ test_classifier_precision │    0.5889003276824951     │
 # └───────────────────────────┴───────────────────────────┘
 ```
 
@@ -215,8 +215,8 @@ $ python evaluate_reader.py \
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃        Test metric        ┃       DataLoader 0        ┃
 # ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-# │   test_answer_accuracy    │    0.3891966640949249     │
-# │ test_classifier_precision │    0.5764542818069458     │
+# │   test_answer_accuracy    │    0.3900277018547058     │
+# │ test_classifier_precision │    0.5836564898490906     │
 # └───────────────────────────┴───────────────────────────┘
 ```
 
