@@ -868,11 +868,3 @@ class BiencoderLightningModule(LightningModule):
         lr_scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
 
         return [optimizer], [{"scheduler": lr_scheduler, "interval": "step"}]
-
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
-                       optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
-        grad = self.passage_encoder.encoder.encoder.layer[-1].output.dense.weight.grad
-        if grad is not None:
-            self.log("grad", torch.linalg.norm(grad).detach())
-
-        optimizer.step(closure=optimizer_closure)
