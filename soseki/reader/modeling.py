@@ -1,6 +1,7 @@
 import json
 import random
 from argparse import ArgumentParser, Namespace
+from itertools import chain
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -71,9 +72,9 @@ class ReaderLightningModule(LightningModule):
     def add_model_specific_args(parent_parser: ArgumentParser) -> ArgumentParser:
         parser = parent_parser.add_argument_group("Reader")
 
-        parser.add_argument("--train_file", type=str, required=True)
-        parser.add_argument("--val_file", type=str, required=True)
-        parser.add_argument("--test_file", type=str)
+        parser.add_argument("--train_file", type=str, nargs="+", required=True)
+        parser.add_argument("--val_file", type=str, nargs="+", required=True)
+        parser.add_argument("--test_file", type=str, nargs="+")
         parser.add_argument("--train_gold_passages_file", type=str)
         parser.add_argument("--val_gold_passages_file", type=str)
         parser.add_argument("--test_gold_passages_file", type=str)
@@ -109,7 +110,7 @@ class ReaderLightningModule(LightningModule):
         if stage == "fit":
             rank_zero_info("Loading the training dataset")
             self._train_dataset = self._load_dataset(
-                dataset_file=self.hparams.train_file,
+                dataset_files=self.hparams.train_file,
                 gold_passages_file=self.hparams.train_gold_passages_file,
                 training=True,
             )
@@ -119,7 +120,7 @@ class ReaderLightningModule(LightningModule):
         if stage in ("fit", "validate"):
             rank_zero_info("Loading the validation dataset")
             self._val_dataset = self._load_dataset(
-                dataset_file=self.hparams.val_file,
+                dataset_files=self.hparams.val_file,
                 gold_passages_file=self.hparams.val_gold_passages_file,
                 training=False,
             )
@@ -129,7 +130,7 @@ class ReaderLightningModule(LightningModule):
         if stage == "test":
             rank_zero_info("Loading the test dataset")
             self._test_dataset = self._load_dataset(
-                dataset_file=self.hparams.test_file,
+                dataset_files=self.hparams.test_file,
                 gold_passages_file=self.hparams.test_gold_passages_file,
                 training=False,
             )
@@ -137,7 +138,7 @@ class ReaderLightningModule(LightningModule):
 
     def _load_dataset(
         self,
-        dataset_file: str,
+        dataset_files: List[str],
         gold_passages_file: Optional[str],
         training: bool,
     ) -> Dataset:
@@ -147,8 +148,8 @@ class ReaderLightningModule(LightningModule):
         else:
             gold_passage_info, canonical_question_info = {}, {}
 
-        # Initialize a dataset iterator for reading a JSON (JSON Lines) file.
-        dataset_iterator = readitem_json(dataset_file)
+        # Initialize a dataset iterator for reading JSON (JSON Lines) files.
+        dataset_iterator = chain.from_iterable(map(readitem_json, dataset_files))
         if self.global_rank == 0:
             dataset_iterator = tqdm(dataset_iterator)
 

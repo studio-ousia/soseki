@@ -4,6 +4,7 @@ import logging
 import re
 import unicodedata
 from argparse import ArgumentParser, Namespace
+from itertools import chain
 
 import torch
 import regex
@@ -140,9 +141,9 @@ def main(args: Namespace):
     output_items = []
 
     if args.qa_file is not None:
-        dataset_iterator = read_qa_file(args.qa_file)
+        dataset_iterator = chain.from_iterable(map(read_qa_file, args.qa_file))
     else:
-        dataset_iterator = read_retriever_file(args.retriever_file)
+        dataset_iterator = chain.from_iterable(map(read_retriever_file, args.retriever_file))
 
     with tqdm() as pbar:
         for batch_tuples in batch_iter(dataset_iterator, batch_size=args.batch_size):
@@ -221,8 +222,8 @@ if __name__ == "__main__":
     parser.add_argument("--biencoder_file", type=str, required=True)
     parser.add_argument("--passage_db_file", type=str, required=True)
     parser.add_argument("--passage_embeddings_file", type=str, required=True)
-    parser.add_argument("--qa_file", type=str)
-    parser.add_argument("--retriever_file", type=str)
+    parser.add_argument("--qa_file", type=str, nargs="+")
+    parser.add_argument("--retriever_file", type=str, nargs="+")
     parser.add_argument("--output_file", type=str)
     parser.add_argument("--eval_mode", choices=("has_answer", "is_labeled_positive"), default="has_answer")
     parser.add_argument("--batch_size", type=int, default=8)
