@@ -33,7 +33,7 @@ def main(args: ArgumentParser):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--reader_file", type=str, required=True)
-    parser.add_argument("--test_file", type=str, required=True)
+    parser.add_argument("--test_file", type=str, nargs="+", required=True)
     parser.add_argument("--test_gold_passages_file", type=str)
     parser.add_argument("--test_num_passages", type=int)
     parser.add_argument("--test_max_load_passages", type=int)

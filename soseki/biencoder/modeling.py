@@ -2,6 +2,7 @@ import math
 import random
 from argparse import ArgumentParser, Namespace
 from collections import defaultdict
+from itertools import chain
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import torch
@@ -209,8 +210,8 @@ class BiencoderLightningModule(LightningModule):
     def add_model_specific_args(parent_parser: ArgumentParser) -> ArgumentParser:
         parser = parent_parser.add_argument_group("Biencoder")
 
-        parser.add_argument("--train_file", type=str, required=True)
-        parser.add_argument("--val_file", type=str, required=True)
+        parser.add_argument("--train_file", type=str, nargs="+", required=True)
+        parser.add_argument("--val_file", type=str, nargs="+", required=True)
         parser.add_argument("--passage_db_file", type=str)
 
         parser.add_argument("--train_use_multiple_key_dataset", action="store_true")
@@ -264,7 +265,7 @@ class BiencoderLightningModule(LightningModule):
         if stage == "fit":
             rank_zero_info("Loading the training dataset")
             self._train_dataset = self._load_dataset(
-                dataset_file=self.hparams.train_file,
+                dataset_files=self.hparams.train_file,
                 use_multiple_key_dataset=self.hparams.train_use_multiple_key_dataset,
                 dataset_keys=self.hparams.train_dataset_keys,
                 training=True,
@@ -275,7 +276,7 @@ class BiencoderLightningModule(LightningModule):
         if stage in ("fit", "validate"):
             rank_zero_info("Loading the validation dataset")
             self._val_dataset = self._load_dataset(
-                dataset_file=self.hparams.val_file,
+                dataset_files=self.hparams.val_file,
                 use_multiple_key_dataset=self.hparams.val_use_multiple_key_dataset,
                 dataset_keys=self.hparams.val_dataset_keys,
                 training=False,
@@ -284,13 +285,13 @@ class BiencoderLightningModule(LightningModule):
 
     def _load_dataset(
         self,
-        dataset_file: str,
+        dataset_files: List[str],
         use_multiple_key_dataset: bool,
         dataset_keys: List[str],
         training: bool,
     ) -> Dataset:
-        # Initialize a dataset iterator for reading a JSON (JSON Lines) file.
-        dataset_iterator = readitem_json(dataset_file)
+        # Initialize a dataset iterator for reading JSON (JSON Lines) files.
+        dataset_iterator = chain.from_iterable(map(readitem_json, dataset_files))
         if self.global_rank == 0:
             dataset_iterator = tqdm(dataset_iterator)
 
